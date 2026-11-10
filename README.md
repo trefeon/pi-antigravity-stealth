@@ -112,6 +112,14 @@ export ANTIGRAVITY_CLIENT_SECRET="your-client-secret"
 
 The plugin automatically detects these variables and uses them for all token exchanges and refreshes.
 
+### 4. Multi-Account Pooling & Automatic Rotation
+
+OMP natively pools all active Antigravity accounts stored in `agent.db`. When you authenticate multiple Google accounts:
+- **Automatic Failover & Rotation**: OMP monitors rolling 5-hour and 7-day quota exhaustion per account. When an active account hits its limit (100% used), OMP automatically rotates to the next available account in the pool.
+- **Account Inventory**: Run `/agy accounts` to view all saved accounts with masked emails.
+- **Tier Verification**: Run `/agy tier <id>` to check subscription levels (**Google AI Ultra**, **Google AI Pro**, **Google AI Plus**, **Free Tier**).
+- **Pool Quota Inspection**: Run `omp usage` from your terminal at any time to monitor capacity and reset countdowns across your entire account pool.
+
 ---
 
 ## Available Models (13 Active Models)

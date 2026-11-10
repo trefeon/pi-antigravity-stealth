@@ -74,6 +74,33 @@ Body:
 }
 ```
 
+Response Payload (Subscription Tier Discovery):
+```json
+{
+  "cloudaicompanionProject": "aicode-consumers",
+  "currentTier": {
+    "id": "free-tier",
+    "name": "Antigravity",
+    "description": "Gemini-powered code suggestions and chat in multiple IDEs"
+  },
+  "paidTier": {
+    "id": "g1-pro-tier",
+    "name": "Google AI Pro",
+    "upgradeSubscriptionText": "You can upgrade to a Google AI Ultra plan to receive higher rate limits."
+  },
+  "allowedTiers": [
+    { "id": "free-tier", "name": "Antigravity", "isDefault": true },
+    { "id": "standard-tier", "name": "Antigravity" }
+  ]
+}
+```
+
+Google Antigravity Tier Hierarchy:
+- **Google AI Ultra** (`g1-ultra-tier`): Highest daily and burst request quotas.
+- **Google AI Pro** (`g1-pro-tier`): Extended request limits with Claude Opus/Sonnet and Gemini 4 Argon access.
+- **Google AI Plus** (`g1-plus-tier`): Starter paid subscription with standard base quotas.
+- **Free Tier** (`free-tier`): Default personal quota allocation.
+
 Onboard User (when `currentTier` is absent):
 ```http
 POST /v1internal:onboardUser HTTP/1.1
