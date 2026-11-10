@@ -15,6 +15,7 @@ import {
   probeAccountTier,
   removeStoredAccount,
   restoreAllStoredAccounts,
+  saveAccountToAgentDb,
 } from "./accounts";
 
 interface ExtensionCommandContext {
@@ -254,7 +255,8 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           notify("Starting Antigravity OAuth browser sign-in...");
           try {
             const creds = await loginWithBrowser((msg) => notify(`  [OAuth] ${msg}`));
-            notify(`Successfully authenticated as ${maskEmail(creds.email || "User")}!`);
+            saveAccountToAgentDb(creds);
+            notify(`Successfully authenticated as ${maskEmail(creds.email || "User")}! Credential saved to agent.db.`);
           } catch (err) {
             notify(`Login failed: ${err instanceof Error ? err.message : String(err)}`, "error");
           }

@@ -29,6 +29,14 @@ export interface StoredAntigravityAccount {
   token?: string;
 }
 
+export interface SaveAccountInput {
+  access_token: string;
+  refresh_token?: string;
+  expires_at?: number;
+  projectId?: string;
+  email?: string;
+}
+
 export function findAgentDbPaths(): string[] {
   const home = process.env.USERPROFILE || process.env.HOME || "";
   const candidates = [
@@ -123,6 +131,47 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
   }
 
   return accounts;
+}
+
+export function saveAccountToAgentDb(creds: SaveAccountInput): boolean {
+  const dbPaths = findAgentDbPaths();
+  const email = creds.email || "unknown";
+  const identityKey = `email:${email}`;
+  const now = Math.floor(Date.now() / 1000);
+  const data = JSON.stringify({
+    access: creds.access_token,
+    refresh: creds.refresh_token,
+    expires: creds.expires_at,
+    email: creds.email,
+    projectId: creds.projectId || "aicode-consumers",
+    authorizedAt: Date.now(),
+  });
+
+  let savedAny = false;
+  for (const dbPath of dbPaths) {
+    try {
+      const db = new Database(dbPath);
+      const existing = db
+        .query(
+          "SELECT id FROM auth_credentials WHERE provider = 'google-antigravity' AND identity_key = ?"
+        )
+        .get(identityKey) as { id: number } | null;
+
+      if (existing) {
+        db.query(
+          "UPDATE auth_credentials SET data = ?, disabled_cause = NULL, updated_at = ? WHERE id = ?"
+        ).run(data, now, existing.id);
+      } else {
+        db.query(
+          "INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause, identity_key, created_at, updated_at) VALUES ('google-antigravity', 'oauth', ?, NULL, ?, ?, ?)"
+        ).run(data, identityKey, now, now);
+      }
+      db.close();
+      savedAny = true;
+    } catch {}
+  }
+
+  return savedAny;
 }
 
 export function restoreAllStoredAccounts(): {
