@@ -13,7 +13,7 @@
 
 In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622), commit `8895c0fa328`), upstream maintainers paused the built-in `google-antigravity` provider in response to Google issuing account restrictions on third-party clients with unverified signatures.
 
-`pi-antigravity-stealth` is a standalone, update-safe plugin for OMP and Pi that:
+`pi-antigravity-stealth` is a standalone, update-safe extension plugin for **Oh My Pi (OMP)** (with `/agy` management commands, bundled skill, and updater also working cleanly on **Pi Coding Agent**):
 
 1. **Unpauses & Delegates to Built-in Antigravity**: Uses OMP's built-in `registerProvider` escape hatch (`customOAuthProviders`) while delegating OAuth, token refresh, endpoint auto-failover, and wire transport to OMP's already-shipped `google-antigravity` implementation.
 2. **Argon Quota Counter Isolation**: Overrides usage parsing (`src/usage.ts`) so exhausted Gemini 4 Argon weekly buckets (`gemini-argon-*`) stay in their own `argon` counter instead of blocking healthy Gemini (`google`) quota across Pro accounts.
@@ -21,7 +21,10 @@ In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622)
 4. **Automatic Credential Recovery**: Discovers existing saved OAuth accounts from `agent.db` (`~/.omp/agent/agent.db` and `~/.pi/agent/agent.db`) and restores them via `/agy restore`.
 5. **Custom Client ID Support**: Allows isolating your Google account with private OAuth client credentials (`ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET`), falling back cleanly to OMP's shipped client config when unset.
 6. **GitHub Release Auto-Updater**: Checks GitHub Releases on interactive session start (every 6 hours, zero API quota) and upgrades script/git installs in place without npm; `/agy update` checks and upgrades immediately.
-7. **Continuous Upstream Automation**: Scheduled GitHub Actions monitor Google Hub manifests, CLI binaries, and upstream OMP KDL rules daily.
+7. **Interactive Command Snippets & Quota Diagnostics**: Registers `/agy` argument completions (`getArgumentCompletions`) with per-subcommand descriptions and account ID suggestions, plus `/agy usage`, `/agy doctor`, headless `--paste` OAuth login, and a bundled agent skill (`skills/antigravity-stealth`).
+8. **Continuous Upstream Automation**: Scheduled GitHub Actions monitor Google Hub manifests, CLI binaries, and upstream OMP KDL rules daily.
+
+> **Host Compatibility Note:** On **OMP** (`@oh-my-pi/pi-coding-agent`), all 13 built-in `google-antigravity` models and streaming transport are unlocked out of the box. On **Pi Coding Agent** (`pi`), the extension, `/agy` commands, bundled skill, and updater load cleanly on Node `>=22.5`, while Antigravity model inference still requires OMP (since `@earendil-works/pi-ai` does not ship Cloud Code Assist wire transport natively).
 
 ---
 
@@ -54,7 +57,7 @@ omp models google-antigravity
 
 ```bash
 # Linux / macOS — specific version
-curl -fsSL https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.sh | bash -s -- --version v1.1.1
+curl -fsSL https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.sh | bash -s -- --version v1.2.0
 
 # Linux / macOS — uninstall (preserves agent.db accounts)
 bash ~/.pi-antigravity-stealth/scripts/install.sh --uninstall
@@ -62,7 +65,7 @@ bash ~/.pi-antigravity-stealth/scripts/install.sh --uninstall
 
 ```powershell
 # Windows — specific version
-$env:PI_ANTIGRAVITY_VERSION = "v1.1.1"; irm https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.ps1 | iex
+$env:PI_ANTIGRAVITY_VERSION = "v1.2.0"; irm https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.ps1 | iex
 
 # Windows — uninstall (preserves agent.db accounts)
 & "$env:USERPROFILE\.pi-antigravity-stealth\scripts\install.ps1" -Uninstall
@@ -179,18 +182,21 @@ Once installed, all built-in Antigravity models are accessible:
 
 ## Slash Commands Reference
 
-Run `/agy` inside your OMP or Pi session:
+Type `/agy ` inside OMP or Pi to open interactive subcommand snippets and account ID completions:
 
 | Command | Action |
 |---|---|
-| `/agy status` | Shows connection endpoint, live Hub version, CL, and active account count |
+| `/agy status` | Shows plugin version, install kind, endpoint, live Hub version/CL, and active account count |
 | `/agy accounts` | Lists all saved Antigravity accounts in `agent.db` with IDs and masked emails |
+| `/agy usage [email\|id]` | Shows live quota % remaining and reset countdowns grouped by Gemini, Argon, and Claude+GPT |
 | `/agy tier [email\|id]` | Probes live Google subscription tier (**Free**, **Google AI Plus**, **Google AI Pro**, **Google AI Ultra**) |
+| `/agy login [--paste]` | Starts PKCE OAuth login (pass `--paste` on headless SSH servers to paste the callback URL) |
 | `/agy remove <email\|id>` | Deactivates an account (`disabled_cause = 'deleted by user'`; use `--hard` for permanent deletion) |
 | `/agy restore` | Clears disabled flags on existing accounts and re-activates them in the session pool |
-| `/agy login` | Starts an interactive PKCE browser sign-in for a new Google account |
 | `/agy manifest` | Forces an immediate refresh check against Google's live update manifest |
+| `/agy doctor` | Prints sanitized host runtime, `omp-builtin`, `agent.db`, Hub UA, and updater diagnostics |
 | `/agy update` | Checks GitHub Releases and updates script/git installs in place |
+
 ---
 
 ## Stealth Wire Signature & Anti-Ban Architecture
@@ -248,6 +254,9 @@ pi-antigravity-stealth/
 │   ├── agy-omp.cmd                     # Windows Command Prompt launcher
 │   ├── agy-omp.ps1                     # PowerShell launcher
 │   └── agy-omp.sh                      # Shell launcher
+├── skills/
+│   └── antigravity-stealth/
+│       └── SKILL.md                    # Bundled agent skill for /agy troubleshooting & SSH login
 └── tests/
     └── plugin.test.ts                  # Unit test suite
 ```

@@ -355,14 +355,16 @@ export function createAntigravityUsageProvider(): AntigravityUsageProvider {
     cacheVersion: 3,
     async fetchUsage(
       params: Record<string, unknown>,
-      ctx: Record<string, unknown>
+      ctx: Record<string, unknown> = {}
     ): Promise<UsageReportLike | null> {
+      const effectiveCtx: Record<string, unknown> =
+        typeof ctx?.fetch === "function" ? ctx : { ...ctx, fetch };
       const builtin = await getBuiltinAntigravityUsageProvider();
       if (builtin) {
-        const report = (await builtin.fetchUsage(params, ctx)) as UsageReportLike | null;
+        const report = (await builtin.fetchUsage(params, effectiveCtx)) as UsageReportLike | null;
         return report ? sanitizeAntigravityUsageReport(report) : null;
       }
-      const fallback = await fetchSummaryFallback(params, ctx);
+      const fallback = await fetchSummaryFallback(params, effectiveCtx);
       return fallback ? sanitizeAntigravityUsageReport(fallback) : null;
     },
   };

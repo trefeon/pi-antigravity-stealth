@@ -1,7 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import antigravityPlugin, { extractCredentials, formatStructuredApiKey } from "../src/index.ts";
+import antigravityPlugin, {
+  AGY_SUBCOMMANDS,
+  extractCredentials,
+  formatStructuredApiKey,
+  getAgyArgumentCompletions,
+} from "../src/index.ts";
 import { buildHubUserAgent, getLiveHubVersion } from "../src/manifest.ts";
-import { getEffectiveClientId, getEffectiveClientSecret, resolveOAuthClientCredentials } from "../src/auth.ts";
+import {
+  getEffectiveClientId,
+  getEffectiveClientSecret,
+  parseOAuthCallbackInput,
+  resolveOAuthClientCredentials,
+} from "../src/auth.ts";
 import { DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET, FALLBACK_PROJECT_ID } from "../src/constants.ts";
 import { type AntigravityUsageProvider, sanitizeAntigravityUsageReport } from "../src/usage.ts";
 import {
@@ -188,6 +198,92 @@ describe("pi-antigravity-stealth Plugin", () => {
     expect("supports" in usageProvider ? usageProvider.supports : undefined).toBeUndefined();
     expect(registeredOptions.oauth).toBeDefined();
     expect(registeredCmd).toBe("agy");
+  });
+
+  it("exposes /agy slash-command autocomplete snippets and dynamic account ID completions", async () => {
+    let commandSpec:
+      | {
+          description?: string;
+          getArgumentCompletions?: (prefix: string) => Array<{ value: string; label: string; description?: string; hint?: string }> | null;
+          handler: (args: string, ctx?: unknown) => Promise<void> | void;
+        }
+      | undefined;
+
+    await antigravityPlugin({
+      registerProvider() {},
+      registerCommand(_name: string, options: unknown) {
+        commandSpec = options as typeof commandSpec;
+      },
+    });
+
+    expect(commandSpec).toBeDefined();
+    expect(typeof commandSpec?.getArgumentCompletions).toBe("function");
+
+    const top = commandSpec?.getArgumentCompletions?.("") ?? [];
+    expect(top.map((c) => c.label)).toEqual(AGY_SUBCOMMANDS.map((s) => s.name));
+    for (const item of top) {
+      expect(item.description).toBeTruthy();
+      expect(item.hint).toBeTruthy();
+    }
+
+    const filtered = getAgyArgumentCompletions("ti") ?? [];
+    expect(filtered).toEqual([
+      {
+        value: "tier ",
+        label: "tier",
+        description: "Probe account tier (Free, Plus, Pro, Ultra)",
+        hint: "er [email|id]",
+      },
+    ]);
+
+    const sampleAccounts = [
+      {
+        id: 7,
+        email: "alice@example.com",
+        isExpired: false,
+        hasRefreshToken: true,
+        disabledCause: null,
+        dbPath: "/tmp/agent.db",
+      },
+    ];
+    const tierTargets = getAgyArgumentCompletions("tier ", () => sampleAccounts) ?? [];
+    expect(tierTargets).toHaveLength(1);
+    expect(tierTargets[0]?.value).toBe("tier 7");
+    expect(tierTargets[0]?.label).toBe("#7");
+    expect(tierTargets[0]?.description).toContain("a***e@example.com");
+
+    const hardFlags = getAgyArgumentCompletions("remove 7 --h", () => sampleAccounts) ?? [];
+    expect(hardFlags).toEqual([
+      {
+        value: "remove 7 --hard",
+        label: "--hard",
+        description: "Permanently delete row from agent.db",
+        hint: "ard",
+      },
+    ]);
+
+    const messages: string[] = [];
+    await commandSpec?.handler("doctor", {
+      hasUI: true,
+      ui: {
+        notify(msg: string) {
+          messages.push(msg);
+        },
+      },
+    });
+    expect(messages[0]).toContain("pi-antigravity-stealth Doctor");
+    expect(messages[0]).toContain("Host Runtime:");
+  });
+
+  it("parses pasted OAuth callback URLs, query strings, and bare codes safely", () => {
+    expect(
+      parseOAuthCallbackInput("http://127.0.0.1:51121/oauth-callback?code=abc123&state=st1", "st1")
+    ).toEqual({ code: "abc123" });
+    expect(parseOAuthCallbackInput("?code=xyz&state=st1", "st1")).toEqual({ code: "xyz" });
+    expect(parseOAuthCallbackInput("4/0A-bare-code", "st1")).toEqual({ code: "4/0A-bare-code" });
+    expect(() =>
+      parseOAuthCallbackInput("http://127.0.0.1:51121/oauth-callback?code=abc&state=wrong", "st1")
+    ).toThrow("OAuth state verification failed");
   });
 
   it("registers cleanly on Pi hosts where pi.logger is absent", async () => {

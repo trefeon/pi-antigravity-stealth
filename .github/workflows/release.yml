@@ -35,7 +35,7 @@ jobs:
           PKG_DIR="pi-antigravity-stealth-${TAG}"
           mkdir -p "dist/${PKG_DIR}"
           cp index.ts package.json README.md LICENSE tsconfig.json "dist/${PKG_DIR}/"
-          cp -r src scripts docs "dist/${PKG_DIR}/"
+          cp -r src scripts docs skills "dist/${PKG_DIR}/"
           tar -C dist -czf "dist/pi-antigravity-stealth-${TAG}.tar.gz" "${PKG_DIR}"
           (cd dist && zip -qr "pi-antigravity-stealth-${TAG}.zip" "${PKG_DIR}")
           (cd dist && sha256sum "pi-antigravity-stealth-${TAG}.tar.gz" "pi-antigravity-stealth-${TAG}.zip" > SHA256SUMS.txt)

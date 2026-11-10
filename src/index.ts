@@ -10,27 +10,159 @@
 
 import { FALLBACK_PROJECT_ID } from "./constants.ts";
 import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest.ts";
-import { hasCustomOAuthClient, loginWithBrowser, refreshAccessToken } from "./auth.ts";
-import { getBuiltinAntigravityDefinition } from "./omp-builtin.ts";
+import { hasCustomOAuthClient, loginWithBrowser, refreshAccessToken, resolveOAuthClientCredentials } from "./auth.ts";
+import {
+  findOmpAgentDistDir,
+  findPiAiPackageDir,
+  getBuiltinAntigravityDefinition,
+} from "./omp-builtin.ts";
 import { createAntigravityUsageProvider } from "./usage.ts";
 import {
+  findAgentDbPaths,
   listStoredAccounts,
   maskEmail,
   probeAccountTier,
   removeStoredAccount,
   restoreAllStoredAccounts,
   saveAccountToAgentDb,
+  type StoredAntigravityAccount,
 } from "./accounts.ts";
 import {
   detectInstall,
   formatUpdateResult,
   maybeAutoUpdate,
   pendingUpdate,
+  readUpdateState,
 } from "./updater.ts";
+
+export interface AutocompleteItem {
+  value: string;
+  label: string;
+  description?: string;
+  hint?: string;
+}
+
+export interface AgySubcommandDef {
+  name: string;
+  usage?: string;
+  takesArgs?: boolean;
+  description: string;
+}
+
+export const AGY_SUBCOMMANDS: readonly AgySubcommandDef[] = [
+  { name: "status", description: "Show plugin, Hub manifest, and account pool status" },
+  { name: "accounts", description: "List saved Antigravity accounts in agent.db" },
+  { name: "usage", usage: "[email|id]", takesArgs: true, description: "Show live 5h/weekly quota % per pool" },
+  { name: "tier", usage: "[email|id]", takesArgs: true, description: "Probe account tier (Free, Plus, Pro, Ultra)" },
+  { name: "login", usage: "[--paste]", description: "Authenticate a Google account (--paste for headless SSH)" },
+  { name: "remove", usage: "<email|id> [--hard]", takesArgs: true, description: "Deactivate or hard-delete an account" },
+  { name: "restore", description: "Re-activate all soft-deleted accounts in agent.db" },
+  { name: "manifest", description: "Refresh live Google Hub version and changelist" },
+  { name: "doctor", description: "Show sanitized host, OAuth, and updater diagnostics" },
+  { name: "update", description: "Check GitHub Releases and auto-update in place" },
+];
+
+export function getAgyArgumentCompletions(
+  argumentPrefix: string,
+  accountsLoader: () => StoredAntigravityAccount[] = listStoredAccounts
+): AutocompleteItem[] | null {
+  const firstSpace = argumentPrefix.indexOf(" ");
+  if (firstSpace < 0) {
+    const lower = argumentPrefix.toLowerCase();
+    const matches = AGY_SUBCOMMANDS.filter((sub) => sub.name.startsWith(lower)).map((sub) => ({
+      value: sub.takesArgs ? `${sub.name} ` : sub.name,
+      label: sub.name,
+      description: sub.description,
+      hint: sub.name.slice(lower.length) + (sub.usage ? ` ${sub.usage}` : ""),
+    }));
+    return matches.length > 0 ? matches : null;
+  }
+
+  const head = argumentPrefix.slice(0, firstSpace).toLowerCase();
+  const rest = argumentPrefix.slice(firstSpace + 1);
+
+  if (head === "login") {
+    const flag = "--paste";
+    const needle = rest.trimStart().toLowerCase();
+    if (!flag.startsWith(needle)) return null;
+    return [
+      {
+        value: "login --paste",
+        label: "--paste",
+        description: "Prompt to paste the redirected OAuth callback URL (headless SSH)",
+        hint: flag.slice(needle.length),
+      },
+    ];
+  }
+
+  if (head !== "tier" && head !== "tiers" && head !== "usage" && head !== "remove" && head !== "delete") {
+    return null;
+  }
+
+  const secondSpace = rest.indexOf(" ");
+  if (secondSpace >= 0) {
+    if (head === "remove" || head === "delete") {
+      const target = rest.slice(0, secondSpace).trim();
+      const flagNeedle = rest.slice(secondSpace + 1).trimStart().toLowerCase();
+      if (target && "--hard".startsWith(flagNeedle)) {
+        return [
+          {
+            value: `${head} ${target} --hard`,
+            label: "--hard",
+            description: "Permanently delete row from agent.db",
+            hint: "--hard".slice(flagNeedle.length),
+          },
+        ];
+      }
+    }
+    return null;
+  }
+
+  const needle = rest.toLowerCase();
+  let accounts: StoredAntigravityAccount[] = [];
+  try {
+    accounts = accountsLoader();
+  } catch {
+    return null;
+  }
+
+  const matches = accounts
+    .filter((a) => {
+      const idStr = String(a.id);
+      const emailLower = (a.email || "").toLowerCase();
+      return idStr.startsWith(needle) || emailLower.includes(needle);
+    })
+    .map((a) => {
+      const idStr = String(a.id);
+      const stateTag = a.disabledCause ? "disabled" : a.isExpired ? "expired" : "active";
+      return {
+        value: `${head} ${idStr}`,
+        label: `#${idStr}`,
+        description: `${maskEmail(a.email || "Unknown")} (${stateTag})`,
+        hint: idStr.startsWith(needle) ? idStr.slice(needle.length) : undefined,
+      };
+    });
+
+  return matches.length > 0 ? matches : null;
+}
+
+function formatResetCountdown(resetsAt?: number): string {
+  if (typeof resetsAt !== "number" || !Number.isFinite(resetsAt)) return "";
+  const diffMs = resetsAt - Date.now();
+  if (diffMs <= 0) return " (resetting)";
+  const totalMinutes = Math.floor(diffMs / 60_000);
+  const days = Math.floor(totalMinutes / (60 * 24));
+  const hours = Math.floor((totalMinutes % (60 * 24)) / 60);
+  const mins = totalMinutes % 60;
+  if (days > 0) return ` (resets in ${days}d ${hours}h)`;
+  if (hours > 0) return ` (resets in ${hours}h ${mins}m)`;
+  return ` (resets in ${mins}m)`;
+}
 
 interface ExtensionCommandContext {
   ui?: {
     notify(message: string, level?: "info" | "warning" | "error"): void;
+    input?(title: string, placeholder?: string): Promise<string | undefined>;
   };
   hasUI?: boolean;
 }
@@ -41,6 +173,7 @@ interface ExtensionAPI {
     name: string,
     options: {
       description?: string;
+      getArgumentCompletions?: (argumentPrefix: string) => AutocompleteItem[] | null;
       handler: (args: string, ctx?: ExtensionCommandContext) => Promise<void> | void;
     }
   ): void;
@@ -239,7 +372,9 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
   // Slash commands for status, accounts, recovery, tiers, and removal
   if (typeof pi.registerCommand === "function") {
     pi.registerCommand("agy", {
-      description: "Manage Google Antigravity stealth status, accounts, and tiers",
+      description:
+        "Antigravity: status | accounts | usage | tier | login | remove | restore | manifest | doctor | update",
+      getArgumentCompletions: (prefix: string) => getAgyArgumentCompletions(prefix),
       handler: async (args: string, ctx?: ExtensionCommandContext) => {
         function notify(msg: string, level: "info" | "warning" | "error" = "info") {
           if (ctx?.hasUI && ctx.ui) {
@@ -276,14 +411,105 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           return;
         }
 
-        if (subcmd === "tier" || subcmd === "tiers") {
+        if (subcmd === "usage" || subcmd === "quota") {
           const accounts = listStoredAccounts();
-          let targets = accounts.filter((a) => a.disabledCause === null && a.token);
+          let targets = accounts.filter((a) => a.disabledCause === null && (a.token || a.refreshToken));
 
           if (param) {
             const needle = param.toLowerCase();
-            targets = targets.filter(
-              (a) => String(a.id) === needle || (a.email && a.email.toLowerCase().includes(needle))
+            const numeric = /^\d+$/.test(needle);
+            targets = targets.filter((a) =>
+              numeric ? String(a.id) === needle : Boolean(a.email && a.email.toLowerCase().includes(needle))
+            );
+          }
+
+          if (targets.length === 0) {
+            notify(`No active Antigravity account found matching "${param || ""}".`);
+            return;
+          }
+
+          notify(`Fetching live quota summary for ${targets.length} account(s)...`);
+          const usageProvider = createAntigravityUsageProvider();
+          const lines = ["Google Antigravity Quota Summary:"];
+
+          for (const a of targets) {
+            let accessToken = a.token || "";
+            let projectId = a.projectId || FALLBACK_PROJECT_ID;
+            if ((a.isExpired || !accessToken) && a.refreshToken) {
+              try {
+                const refreshed = await runUnifiedRefresh({
+                  refresh: a.refreshToken,
+                  projectId,
+                  email: a.email,
+                });
+                const extracted = extractCredentials(refreshed);
+                if (extracted.token) {
+                  accessToken = extracted.token;
+                  projectId = extracted.projectId;
+                  saveAccountToAgentDb({
+                    access_token: accessToken,
+                    refresh_token: extracted.refreshToken || a.refreshToken,
+                    expires_at: extracted.expiresAt,
+                    projectId,
+                    email: a.email,
+                  });
+                }
+              } catch {}
+            }
+
+            if (!accessToken) {
+              lines.push(`  • #${a.id} ${maskEmail(a.email || "Unknown")}: [Token unavailable — run '/agy login']`);
+              continue;
+            }
+
+            const report = await usageProvider.fetchUsage(
+              {
+                provider: "google-antigravity",
+                credential: {
+                  accessToken,
+                  projectId,
+                  email: a.email,
+                },
+              },
+              { fetch }
+            );
+
+            lines.push(`  • #${a.id} ${maskEmail(a.email || "Unknown")} (Project: ${projectId}):`);
+            if (!report || report.limits.length === 0) {
+              lines.push("      No quota buckets returned.");
+              continue;
+            }
+
+            const seenShared = new Set<string>();
+            for (const limit of report.limits) {
+              const sharedGroup =
+                typeof limit.scope?.sharedGroup === "string" ? limit.scope.sharedGroup : undefined;
+              if (sharedGroup) {
+                if (seenShared.has(sharedGroup)) continue;
+                seenShared.add(sharedGroup);
+              }
+              const pct =
+                typeof limit.amount?.remainingFraction === "number"
+                  ? `${Math.round(limit.amount.remainingFraction * 100)}% left`
+                  : limit.status || "unknown";
+              const winLabel = limit.window?.label ? ` (${limit.window.label})` : "";
+              const resetText = formatResetCountdown(limit.window?.resetsAt);
+              lines.push(`      - ${limit.label || limit.id}${winLabel}: ${pct}${resetText}`);
+            }
+          }
+          notify(lines.join("\n"));
+          return;
+        }
+
+        if (subcmd === "tier" || subcmd === "tiers") {
+          const accounts = listStoredAccounts();
+          let targets = accounts.filter((a) => a.disabledCause === null && (a.token || a.refreshToken));
+
+          if (param) {
+            const needle = param.toLowerCase();
+            const numeric = /^\d+$/.test(needle);
+            targets = targets.filter((a) =>
+              numeric ? String(a.id) === needle : Boolean(a.email && a.email.toLowerCase().includes(needle))
             );
           }
 
@@ -296,8 +522,29 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           const lines = [`Google Antigravity Account Tiers:`];
 
           for (const a of targets) {
-            if (!a.token) continue;
-            const tier = await probeAccountTier(a.token);
+            let accessToken = a.token || "";
+            if ((a.isExpired || !accessToken) && a.refreshToken) {
+              try {
+                const refreshed = await runUnifiedRefresh({
+                  refresh: a.refreshToken,
+                  projectId: a.projectId,
+                  email: a.email,
+                });
+                const extracted = extractCredentials(refreshed);
+                if (extracted.token) {
+                  accessToken = extracted.token;
+                  saveAccountToAgentDb({
+                    access_token: accessToken,
+                    refresh_token: extracted.refreshToken || a.refreshToken,
+                    expires_at: extracted.expiresAt,
+                    projectId: extracted.projectId,
+                    email: a.email,
+                  });
+                }
+              } catch {}
+            }
+            if (!accessToken) continue;
+            const tier = await probeAccountTier(accessToken);
             const badge = tier.isPaid ? `[${tier.tierName}] 🌟` : `[${tier.tierName}]`;
             lines.push(`  • #${a.id} ${maskEmail(a.email || "Unknown")}: ${badge}`);
             if (tier.upgradeText) {
@@ -310,7 +557,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
 
         if (subcmd === "remove" || subcmd === "delete") {
           if (!param) {
-            notify("Usage: /agy remove <email|id> [--hard]\nExample: /agy remove user@gmail.com", "warning");
+            notify("Usage: /agy remove <email|id> [--hard]\nExample: /agy remove 1", "warning");
             return;
           }
           const hard = parts.includes("--hard") || parts.includes("-f");
@@ -333,13 +580,31 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
         }
 
         if (subcmd === "login") {
-          notify("Starting Antigravity OAuth browser sign-in...");
+          const usePastePrompt = parts.includes("--paste") || parts.includes("--manual");
+          notify("Starting Antigravity OAuth sign-in...");
           try {
             const creds = await loginWithBrowser({
+              openBrowser: !usePastePrompt,
+              onAuth: (info) => {
+                notify(`Open OAuth URL in browser:\n${info.url}\n${info.instructions || ""}`);
+              },
               onProgress: (msg) => notify(`  [OAuth] ${msg}`),
+              ...(usePastePrompt && ctx?.ui?.input
+                ? {
+                    onPrompt: async (prompt) => {
+                      const val = await ctx.ui!.input!(prompt.message, prompt.placeholder);
+                      if (!val) throw new Error("Antigravity login cancelled.");
+                      return val;
+                    },
+                  }
+                : {}),
             });
-            saveAccountToAgentDb(creds);
-            notify(`Successfully authenticated as ${maskEmail(creds.email || "User")}! Credential saved to agent.db.`);
+            const saved = saveAccountToAgentDb(creds);
+            notify(
+              saved
+                ? `Successfully authenticated as ${maskEmail(creds.email || "User")}! Credential saved to agent.db.`
+                : `Authenticated as ${maskEmail(creds.email || "User")}, but could not write agent.db.`
+            );
           } catch (err) {
             notify(`Login failed: ${err instanceof Error ? err.message : String(err)}`, "error");
           }
@@ -349,6 +614,51 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
         if (subcmd === "manifest" || subcmd === "refresh") {
           const refreshed = await getLiveHubVersion(5000);
           notify(`Antigravity Manifest Refreshed: v${refreshed.version} (cl=${refreshed.changelist})`);
+          return;
+        }
+
+        if (subcmd === "doctor") {
+          const install = detectInstall();
+          const runtime =
+            typeof process.versions?.bun === "string"
+              ? `Bun ${process.versions.bun}`
+              : `Node ${process.version}`;
+          const distDir = findOmpAgentDistDir();
+          const piAiDir = findPiAiPackageDir();
+          const resolvedCreds = resolveOAuthClientCredentials();
+          const dbPaths = findAgentDbPaths();
+          const accounts = listStoredAccounts();
+          const activeAcc = accounts.filter((a) => a.disabledCause === null && !a.isExpired).length;
+          const expiredAcc = accounts.filter((a) => a.disabledCause === null && a.isExpired).length;
+          const disabledAcc = accounts.filter((a) => a.disabledCause !== null).length;
+          const upd = readUpdateState();
+          const ua = await buildHubUserAgent();
+
+          const lines = [
+            `=== pi-antigravity-stealth Doctor ===`,
+            `Plugin: v${install.version} (${install.kind}) @ ${install.root}`,
+            `Host Runtime: ${runtime} (${process.platform}/${process.arch})`,
+            `OMP Built-in Dist: ${distDir ?? "not found (standalone binary or Pi)"}`,
+            `OMP Built-in pi-ai: ${piAiDir ?? "not found"}`,
+            `OAuth Client Creds: ${
+              hasCustomOAuthClient()
+                ? "Custom env (ANTIGRAVITY_CLIENT_ID/SECRET)"
+                : resolvedCreds.clientId && resolvedCreds.clientSecret
+                ? "OMP Built-in rules.json"
+                : "MISSING (set ANTIGRAVITY_CLIENT_ID & ANTIGRAVITY_CLIENT_SECRET for /agy login)"
+            }`,
+            `Database Paths: ${dbPaths.length > 0 ? dbPaths.join(", ") : "none created yet"}`,
+            `Accounts: ${activeAcc} active, ${expiredAcc} expired, ${disabledAcc} disabled`,
+            `Hub User-Agent: ${ua}`,
+            `Updater Cache: ${
+              upd
+                ? `latest=v${upd.latest ?? "?"}, checked=${upd.checkedAt ? new Date(upd.checkedAt).toISOString() : "never"}${
+                    upd.lastError ? `, lastError=${upd.lastError}` : ""
+                  }`
+                : "no cached check yet"
+            }`,
+          ];
+          notify(lines.join("\n"));
           return;
         }
 
@@ -378,15 +688,10 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           `Simulated Client: Antigravity Hub v${version} (CL ${changelist})`,
           `Saved Accounts in agent.db: ${activeCount} active (${storedAccounts.length} total)`,
           ``,
-          `Subcommands:`,
-          `  /agy status               - Show connection and stealth status (default)`,
-          `  /agy accounts             - List saved Antigravity accounts in agent.db`,
-          `  /agy tier [email|id]      - Probe subscription tier (Free, Plus, Pro, Ultra)`,
-          `  /agy remove <email|id>    - Deactivate an account (soft delete)`,
-          `  /agy restore              - Re-activate all soft-deleted accounts`,
-          `  /agy login                - Authenticate a new Google account`,
-          `  /agy manifest             - Refresh Google Hub release version`,
-          `  /agy update               - Check GitHub Releases and auto-update`,
+          `Subcommands (type '/agy ' for autocomplete):`,
+          ...AGY_SUBCOMMANDS.map(
+            (s) => `  /agy ${(s.usage ? `${s.name} ${s.usage}` : s.name).padEnd(26)} - ${s.description}`
+          ),
         ];
         notify(lines.join("\n"));
       },

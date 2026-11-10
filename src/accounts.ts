@@ -66,6 +66,7 @@ export interface StoredAntigravityAccount {
   disabledCause: string | null;
   dbPath: string;
   token?: string;
+  refreshToken?: string;
 }
 
 export interface SaveAccountInput {
@@ -152,6 +153,15 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
           }
         } catch {}
 
+        let refreshToken: string | undefined;
+        try {
+          const parsedRefresh = JSON.parse(row.data) as Record<string, unknown>;
+          if (typeof parsedRefresh.refresh === "string" && parsedRefresh.refresh.length > 0) {
+            refreshToken = parsedRefresh.refresh;
+          } else if (typeof parsedRefresh.refresh_token === "string" && parsedRefresh.refresh_token.length > 0) {
+            refreshToken = parsedRefresh.refresh_token;
+          }
+        } catch {}
         const isExpired = expiresAt !== undefined ? Date.now() >= expiresAt : false;
 
         accounts.push({
@@ -164,6 +174,7 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
           disabledCause: row.disabled_cause,
           dbPath,
           token,
+          refreshToken,
         });
       }
       db.close();
@@ -173,8 +184,30 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
   return accounts;
 }
 
+
+function ensureSaveAgentDbPaths(): string[] {
+  const existing = findAgentDbPaths();
+  if (existing.length > 0) return existing;
+
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  if (!home) return [];
+  const defaultDir = path.join(home, ".omp", "agent");
+  const defaultDb = path.join(defaultDir, "agent.db");
+  try {
+    fs.mkdirSync(defaultDir, { recursive: true, mode: 0o700 });
+    const db = openSqlite(defaultDb, false);
+    if (!db) return [];
+    db.query(
+      "CREATE TABLE IF NOT EXISTS auth_credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, credential_type TEXT NOT NULL, data TEXT NOT NULL, disabled_cause TEXT, identity_key TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+    ).run();
+    db.close();
+    return [defaultDb];
+  } catch {
+    return [];
+  }
+}
 export function saveAccountToAgentDb(creds: SaveAccountInput): boolean {
-  const dbPaths = findAgentDbPaths();
+  const dbPaths = ensureSaveAgentDbPaths();
   const email = creds.email || "unknown";
   const identityKey = `email:${email}`;
   const now = Math.floor(Date.now() / 1000);

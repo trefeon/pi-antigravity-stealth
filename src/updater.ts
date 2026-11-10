@@ -436,7 +436,7 @@ function findExtractedPackageDir(stageDir: string): string | null {
 }
 
 const RELEASE_FILES = ["index.ts", "package.json", "README.md", "LICENSE", "tsconfig.json"];
-const RELEASE_DIRS = ["src", "scripts", "docs"];
+const RELEASE_DIRS = ["src", "scripts", "docs", "skills"];
 
 async function upgradeScriptInstall(
   install: InstallInfo,

@@ -38,7 +38,43 @@ export interface AntigravityCredentials {
 export interface BrowserLoginCallbacks {
   onProgress?: (message: string) => void;
   onAuth?: (info: { url: string; instructions?: string }) => void;
+  onPrompt?: (prompt: { message: string; placeholder?: string; allowEmpty?: boolean }) => Promise<string>;
+  onManualCodeInput?: () => Promise<string>;
+  openBrowser?: boolean;
   signal?: AbortSignal;
+}
+
+export function parseOAuthCallbackInput(rawInput: string, expectedState: string): { code: string } {
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    throw new Error("Empty OAuth callback URL or authorization code.");
+  }
+
+  let params: URLSearchParams | null = null;
+  if (/^https?:\/\//i.test(trimmed)) {
+    const parsed = new URL(trimmed);
+    params = parsed.searchParams;
+  } else if (trimmed.includes("code=") || trimmed.includes("error=") || trimmed.startsWith("?")) {
+    params = new URLSearchParams(trimmed.startsWith("?") ? trimmed.slice(1) : trimmed);
+  }
+
+  if (params) {
+    const error = params.get("error");
+    if (error) {
+      throw new Error(`OAuth error: ${error}`);
+    }
+    const returnedState = params.get("state");
+    if (returnedState && returnedState !== expectedState) {
+      throw new Error("OAuth state verification failed.");
+    }
+    const code = params.get("code");
+    if (!code) {
+      throw new Error("Missing authorization code in pasted callback URL.");
+    }
+    return { code };
+  }
+
+  return { code: trimmed };
 }
 
 export function getEffectiveClientId(): string {
@@ -109,16 +145,24 @@ export async function loginWithBrowser(
   authUrl.searchParams.set("prompt", "consent");
 
   const { promise, resolve, reject } = Promise.withResolvers<AntigravityCredentials>();
-  let resolved = false;
+  let settled = false;
+
+  const cleanup = () => {
+    callbacks.signal?.removeEventListener("abort", cleanupAbort);
+    try {
+      server.close();
+    } catch {}
+  };
+
+  const fail = (err: unknown) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+    reject(err instanceof Error ? err : new Error(String(err)));
+  };
 
   const cleanupAbort = () => {
-    if (!resolved) {
-      resolved = true;
-      try {
-        server.close();
-      } catch {}
-      reject(new Error("Antigravity login cancelled."));
-    }
+    fail(new Error("Antigravity login cancelled."));
   };
 
   if (callbacks.signal?.aborted) {
@@ -126,49 +170,12 @@ export async function loginWithBrowser(
   }
   callbacks.signal?.addEventListener("abort", cleanupAbort, { once: true });
 
-  const server = http.createServer(async (req, res) => {
+  const completeWithCode = async (code: string) => {
+    if (settled) return;
+    settled = true;
+    cleanup();
+
     try {
-      const reqUrl = new URL(req.url || "", `http://127.0.0.1:${CALLBACK_PORT}`);
-      if (reqUrl.pathname !== CALLBACK_PATH) {
-        res.writeHead(404);
-        res.end("Not Found");
-        return;
-      }
-
-      const code = reqUrl.searchParams.get("code");
-      const returnedState = reqUrl.searchParams.get("state");
-      const error = reqUrl.searchParams.get("error");
-
-      if (error) {
-        res.writeHead(400, { "Content-Type": "text/html" });
-        res.end(`<h3>Authentication Failed</h3><p>${error}</p>`);
-        if (!resolved) {
-          resolved = true;
-          server.close();
-          reject(new Error(`OAuth error: ${error}`));
-        }
-        return;
-      }
-
-      if (!code || returnedState !== state) {
-        res.writeHead(400, { "Content-Type": "text/html" });
-        res.end("<h3>Invalid Callback</h3><p>State mismatch or missing authorization code.</p>");
-        if (!resolved) {
-          resolved = true;
-          server.close();
-          reject(new Error("OAuth state verification failed."));
-        }
-        return;
-      }
-
-      res.writeHead(200, { "Content-Type": "text/html" });
-      res.end("<h3>Success!</h3><p>Antigravity authentication successful. You can close this window.</p>");
-
-      server.close();
-      if (resolved) return;
-      resolved = true;
-      callbacks.signal?.removeEventListener("abort", cleanupAbort);
-
       callbacks.onProgress?.("Exchanging authorization code for tokens...");
       const userAgent = await buildHubUserAgent();
 
@@ -203,7 +210,6 @@ export async function loginWithBrowser(
       const refreshToken = typeof tokenData.refresh_token === "string" ? tokenData.refresh_token : undefined;
       const expiresIn = typeof tokenData.expires_in === "number" ? tokenData.expires_in : 3600;
 
-      // Fetch User Email
       let email: string | undefined;
       try {
         const userinfoRes = await fetch(OAUTH_USERINFO_URL, {
@@ -221,7 +227,6 @@ export async function loginWithBrowser(
         }
       } catch {}
 
-      // Discover GCP Project ID
       callbacks.onProgress?.("Discovering Cloud Code Assist project...");
       let projectId = FALLBACK_PROJECT_ID;
       try {
@@ -260,31 +265,94 @@ export async function loginWithBrowser(
         email,
       });
     } catch (err) {
-      if (!resolved) {
-        resolved = true;
-        server.close();
-        reject(err instanceof Error ? err : new Error(String(err)));
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
+  };
+
+  const server = http.createServer((req, res) => {
+    try {
+      const reqUrl = new URL(req.url || "", `http://127.0.0.1:${CALLBACK_PORT}`);
+      if (reqUrl.pathname !== CALLBACK_PATH) {
+        res.writeHead(404);
+        res.end("Not Found");
+        return;
       }
+
+      const error = reqUrl.searchParams.get("error");
+      const code = reqUrl.searchParams.get("code");
+      const returnedState = reqUrl.searchParams.get("state");
+
+      if (error) {
+        res.writeHead(400, { "Content-Type": "text/html" });
+        res.end(`<h3>Authentication Failed</h3><p>${error}</p>`);
+        fail(new Error(`OAuth error: ${error}`));
+        return;
+      }
+
+      if (!code || returnedState !== state) {
+        res.writeHead(400, { "Content-Type": "text/html" });
+        res.end("<h3>Invalid Callback</h3><p>State mismatch or missing authorization code.</p>");
+        fail(new Error("OAuth state verification failed."));
+        return;
+      }
+
+      res.writeHead(200, { "Content-Type": "text/html" });
+      res.end("<h3>Success!</h3><p>Antigravity authentication successful. You can close this window.</p>");
+      void completeWithCode(code);
+    } catch (err) {
+      fail(err);
     }
   });
+
+  const startManualInput = () => {
+    const reader = callbacks.onManualCodeInput
+      ? () => callbacks.onManualCodeInput!()
+      : callbacks.onPrompt
+      ? () =>
+          callbacks.onPrompt!({
+            message: "Paste the redirected localhost callback URL (or authorization code)",
+            placeholder: `${REDIRECT_URI}?code=...&state=...`,
+          })
+      : null;
+    if (!reader) return;
+    void reader()
+      .then((raw) => {
+        if (settled) return;
+        const parsed = parseOAuthCallbackInput(raw, state);
+        void completeWithCode(parsed.code);
+      })
+      .catch((err) => {
+        if (!settled) {
+          fail(err);
+        }
+      });
+  };
 
   server.listen(CALLBACK_PORT, "127.0.0.1", () => {
     const urlStr = authUrl.toString();
     callbacks.onAuth?.({
       url: urlStr,
-      instructions: "Complete the sign-in in your browser.",
+      instructions:
+        "Open the URL in your browser. Over SSH, forward port 51121 (ssh -L 51121:127.0.0.1:51121 <host>) or paste the callback URL.",
     });
     callbacks.onProgress?.(`Opening browser for Antigravity sign-in: ${urlStr}`);
-    if (!callbacks.onAuth) {
+    if (callbacks.openBrowser ?? !callbacks.onAuth) {
       openBrowser(urlStr);
     }
+    startManualInput();
   });
 
   server.on("error", (err) => {
-    if (!resolved) {
-      resolved = true;
-      reject(new Error(`Failed to bind callback server on port ${CALLBACK_PORT}: ${err.message}`));
+    if (callbacks.onManualCodeInput || callbacks.onPrompt) {
+      const urlStr = authUrl.toString();
+      callbacks.onAuth?.({
+        url: urlStr,
+        instructions: `Port ${CALLBACK_PORT} is busy; open the URL and paste the redirected callback URL.`,
+      });
+      startManualInput();
+      return;
     }
+    fail(new Error(`Failed to bind callback server on port ${CALLBACK_PORT}: ${err.message}`));
   });
 
   return promise;
