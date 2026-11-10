@@ -1,6 +1,6 @@
 {
   "name": "pi-antigravity-stealth",
-  "version": "1.1.1",
+  "version": "1.2.0",
   "type": "module",
   "main": "index.ts",
   "description": "Stealth Google Antigravity provider unpause with official Hub wire signatures and saved credential recovery for Pi & OMP",
@@ -13,6 +13,9 @@
   "homepage": "https://github.com/trefeon/pi-antigravity-stealth#readme",
   "bugs": {
     "url": "https://github.com/trefeon/pi-antigravity-stealth/issues"
+  },
+  "engines": {
+    "node": ">=22.5.0"
   },
   "keywords": [
     "pi-package",
@@ -28,11 +31,15 @@
   ],
   "files": [
     "index.ts",
-    "src"
+    "src",
+    "skills"
   ],
   "pi": {
     "extensions": [
       "./index.ts"
+    ],
+    "skills": [
+      "./skills"
     ]
   },
   "omp": {
