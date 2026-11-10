@@ -59,20 +59,32 @@ function getCandidatePackageRoots(): string[] {
   return [...roots];
 }
 
-export function findOmpAgentDistDir(): string | null {
-  for (const root of getCandidatePackageRoots()) {
-    const candidate = path.join(root, "pi-coding-agent", "dist");
-    if (fs.existsSync(candidate)) {
+function isExpectedPackage(pkgDir: string, expectedName: string): boolean {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(pkgDir, "package.json"), "utf8")) as {
+      name?: unknown;
+    };
+    return pkg.name === expectedName;
+  } catch {
+    return false;
+  }
+}
+
+export function findOmpAgentDistDir(rootsOverride?: string[]): string | null {
+  for (const root of rootsOverride ?? getCandidatePackageRoots()) {
+    const pkgDir = path.join(root, "pi-coding-agent");
+    const candidate = path.join(pkgDir, "dist");
+    if (fs.existsSync(candidate) && isExpectedPackage(pkgDir, "@oh-my-pi/pi-coding-agent")) {
       return candidate;
     }
   }
   return null;
 }
 
-export function findPiAiPackageDir(): string | null {
-  for (const root of getCandidatePackageRoots()) {
+export function findPiAiPackageDir(rootsOverride?: string[]): string | null {
+  for (const root of rootsOverride ?? getCandidatePackageRoots()) {
     const candidate = path.join(root, "pi-ai");
-    if (fs.existsSync(path.join(candidate, "src"))) {
+    if (fs.existsSync(path.join(candidate, "src")) && isExpectedPackage(candidate, "@oh-my-pi/pi-ai")) {
       return candidate;
     }
   }

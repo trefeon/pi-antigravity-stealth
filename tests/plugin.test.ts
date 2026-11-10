@@ -10,8 +10,10 @@ import {
   getEffectiveClientId,
   getEffectiveClientSecret,
   parseOAuthCallbackInput,
+  resolveBrowserLaunch,
   resolveOAuthClientCredentials,
 } from "../src/auth.ts";
+import { findOmpAgentDistDir } from "../src/omp-builtin.ts";
 import { DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET, FALLBACK_PROJECT_ID } from "../src/constants.ts";
 import { type AntigravityUsageProvider, sanitizeAntigravityUsageReport } from "../src/usage.ts";
 import {
@@ -443,6 +445,39 @@ describe("pi-antigravity-stealth Plugin", () => {
         fetchImpl: mockFetch,
       });
       expect(res2.status).toBe("current");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("builds shell-less browser launch commands preserving query ampersands on Windows", () => {
+    const url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=abc&state=xyz";
+    expect(resolveBrowserLaunch(url, "win32")).toEqual({
+      command: "rundll32.exe",
+      args: ["url.dll,FileProtocolHandler", url],
+    });
+    expect(resolveBrowserLaunch(url, "darwin")).toEqual({ command: "open", args: [url] });
+    expect(resolveBrowserLaunch(url, "linux")).toEqual({ command: "xdg-open", args: [url] });
+  });
+
+  it("verifies @oh-my-pi package ownership in findOmpAgentDistDir and ignores @earendil-works/pi-coding-agent", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-omp-dir-"));
+    try {
+      const piScope = path.join(tmp, "@earendil-works");
+      fs.mkdirSync(path.join(piScope, "pi-coding-agent", "dist"), { recursive: true });
+      fs.writeFileSync(
+        path.join(piScope, "pi-coding-agent", "package.json"),
+        JSON.stringify({ name: "@earendil-works/pi-coding-agent" })
+      );
+      expect(findOmpAgentDistDir([piScope])).toBeNull();
+
+      const ompScope = path.join(tmp, "@oh-my-pi");
+      fs.mkdirSync(path.join(ompScope, "pi-coding-agent", "dist"), { recursive: true });
+      fs.writeFileSync(
+        path.join(ompScope, "pi-coding-agent", "package.json"),
+        JSON.stringify({ name: "@oh-my-pi/pi-coding-agent" })
+      );
+      expect(findOmpAgentDistDir([piScope, ompScope])).toBe(path.join(ompScope, "pi-coding-agent", "dist"));
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

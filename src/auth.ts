@@ -8,7 +8,7 @@
 
 import * as http from "http";
 import * as crypto from "crypto";
-import { exec } from "child_process";
+import { execFile } from "child_process";
 import {
   ANTIGRAVITY_ENDPOINT_DAILY,
   ANTIGRAVITY_SCOPES,
@@ -410,13 +410,23 @@ export async function refreshAccessToken(
   };
 }
 
-function openBrowser(url: string): void {
-  const platform = process.platform;
+export function resolveBrowserLaunch(
+  url: string,
+  platform: NodeJS.Platform = process.platform
+): { command: string; args: string[] } {
   if (platform === "win32") {
-    exec(`start "" "${url}"`);
-  } else if (platform === "darwin") {
-    exec(`open "${url}"`);
-  } else {
-    exec(`xdg-open "${url}"`);
+    return { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", url] };
   }
+  if (platform === "darwin") {
+    return { command: "open", args: [url] };
+  }
+  return { command: "xdg-open", args: [url] };
+}
+
+function openBrowser(url: string): void {
+  const { command, args } = resolveBrowserLaunch(url);
+  try {
+    const child = execFile(command, args, { windowsHide: true }, () => {});
+    child.unref?.();
+  } catch {}
 }
