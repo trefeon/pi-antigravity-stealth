@@ -28,8 +28,7 @@
   ],
   "files": [
     "index.ts",
-    "src",
-    "scripts"
+    "src"
   ],
   "pi": {
     "extensions": [

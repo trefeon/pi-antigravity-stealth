@@ -1,34 +1,19 @@
 /**
  * src/constants.ts
  *
- * Wire endpoints, OAuth credentials, and stealth parameters for Google Antigravity.
+ * Wire endpoints, OAuth configuration, and baseline parameters for Google Antigravity.
  */
 
 export const ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_ENDPOINT_PROD = "https://cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_ENDPOINT_SANDBOX = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 
-// Masked fallback client credentials matching OMP upstream catalog rules
-const ENC_CLIENT_ID = [
-  107, 106, 109, 107, 106, 106, 108, 106, 108, 106, 111, 99, 107, 119, 46, 55,
-  50, 41, 41, 51, 52, 104, 50, 104, 107, 54, 57, 40, 63, 104, 105, 111, 44, 46,
-  53, 54, 53, 48, 50, 110, 61, 110, 106, 105, 63, 42, 116, 59, 42, 42, 41, 116,
-  61, 53, 53, 61, 54, 63, 47, 41, 63, 40, 57, 53, 52, 46, 63, 52, 46, 116, 57,
-  53, 55,
-];
+// Client credentials supplied via environment or loaded from local configuration
+export const DEFAULT_CLIENT_ID =
+  process.env.ANTIGRAVITY_CLIENT_ID?.trim() || "";
 
-const ENC_CLIENT_SECRET = [
-  29, 21, 25, 9, 10, 2, 119, 17, 111, 98, 28, 13, 8, 110, 98, 108, 22, 62, 22,
-  16, 107, 55, 22, 24, 98, 41, 2, 25, 110, 32, 108, 43, 30, 27, 60,
-];
-
-export const DEFAULT_CLIENT_ID = Buffer.from(
-  ENC_CLIENT_ID.map((b) => b ^ 0x5a)
-).toString("utf8");
-
-export const DEFAULT_CLIENT_SECRET = Buffer.from(
-  ENC_CLIENT_SECRET.map((b) => b ^ 0x5a)
-).toString("utf8");
+export const DEFAULT_CLIENT_SECRET =
+  process.env.ANTIGRAVITY_CLIENT_SECRET?.trim() || "";
 
 export const OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 export const OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
