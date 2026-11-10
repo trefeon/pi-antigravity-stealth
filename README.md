@@ -54,7 +54,7 @@ omp models google-antigravity
 
 ```bash
 # Linux / macOS — specific version
-curl -fsSL https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.sh | bash -s -- --version v1.1.0
+curl -fsSL https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.sh | bash -s -- --version v1.1.1
 
 # Linux / macOS — uninstall (preserves agent.db accounts)
 bash ~/.pi-antigravity-stealth/scripts/install.sh --uninstall
@@ -62,7 +62,7 @@ bash ~/.pi-antigravity-stealth/scripts/install.sh --uninstall
 
 ```powershell
 # Windows — specific version
-$env:PI_ANTIGRAVITY_VERSION = "v1.1.0"; irm https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.ps1 | iex
+$env:PI_ANTIGRAVITY_VERSION = "v1.1.1"; irm https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.ps1 | iex
 
 # Windows — uninstall (preserves agent.db accounts)
 & "$env:USERPROFILE\.pi-antigravity-stealth\scripts\install.ps1" -Uninstall

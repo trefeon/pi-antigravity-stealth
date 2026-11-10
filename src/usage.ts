@@ -10,9 +10,9 @@
  * and blocking healthy Google AI Pro accounts with 60–100% Gemini quota left.
  */
 
-import { ANTIGRAVITY_ENDPOINT_DAILY, ANTIGRAVITY_ENDPOINT_SANDBOX } from "./constants";
-import { buildHubUserAgent } from "./manifest";
-import { getBuiltinAntigravityUsageProvider } from "./omp-builtin";
+import { ANTIGRAVITY_ENDPOINT_DAILY, ANTIGRAVITY_ENDPOINT_SANDBOX } from "./constants.ts";
+import { buildHubUserAgent } from "./manifest.ts";
+import { getBuiltinAntigravityUsageProvider } from "./omp-builtin.ts";
 
 export interface UsageLimitLike {
   id: string;

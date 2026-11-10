@@ -6,10 +6,49 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Database } from "bun:sqlite";
-import { ANTIGRAVITY_ENDPOINT_DAILY } from "./constants";
-import { buildHubUserAgent } from "./manifest";
+import { createRequire } from "module";
+import { ANTIGRAVITY_ENDPOINT_DAILY } from "./constants.ts";
+import { buildHubUserAgent } from "./manifest.ts";
 
+interface SqliteStatement {
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
+  run(...params: unknown[]): unknown;
+}
+
+interface SqliteDb {
+  query(sql: string): SqliteStatement;
+  close(): void;
+}
+
+const requireFromHere = createRequire(import.meta.url);
+
+function openSqlite(dbPath: string, readonly: boolean): SqliteDb | null {
+  try {
+    if (typeof process.versions?.bun === "string") {
+      const mod = requireFromHere("bun:sqlite") as {
+        Database: new (p: string, opts?: { readonly?: boolean }) => SqliteDb;
+      };
+      return new mod.Database(dbPath, readonly ? { readonly: true } : undefined);
+    }
+  } catch {}
+
+  try {
+    const mod = requireFromHere("node:sqlite") as {
+      DatabaseSync: new (
+        p: string,
+        opts?: { readOnly?: boolean }
+      ) => { prepare(sql: string): SqliteStatement; close(): void };
+    };
+    const db = new mod.DatabaseSync(dbPath, readonly ? { readOnly: true } : undefined);
+    return {
+      query: (sql: string) => db.prepare(sql),
+      close: () => db.close(),
+    };
+  } catch {
+    return null;
+  }
+}
 export interface AccountTierInfo {
   tierId: string;
   tierName: string;
@@ -63,7 +102,8 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
 
   for (const dbPath of dbPaths) {
     try {
-      const db = new Database(dbPath, { readonly: true });
+      const db = openSqlite(dbPath, true);
+      if (!db) continue;
       const rows = db
         .query(
           "SELECT id, identity_key, data, disabled_cause FROM auth_credentials WHERE provider = 'google-antigravity'"
@@ -150,7 +190,8 @@ export function saveAccountToAgentDb(creds: SaveAccountInput): boolean {
   let savedAny = false;
   for (const dbPath of dbPaths) {
     try {
-      const db = new Database(dbPath);
+      const db = openSqlite(dbPath, false);
+      if (!db) continue;
       const existing = db
         .query(
           "SELECT id FROM auth_credentials WHERE provider = 'google-antigravity' AND identity_key = ?"
@@ -186,7 +227,8 @@ export function restoreAllStoredAccounts(): {
 
   for (const dbPath of dbPaths) {
     try {
-      const db = new Database(dbPath);
+      const db = openSqlite(dbPath, false);
+      if (!db) continue;
       const rows = db
         .query(
           "SELECT id, identity_key, disabled_cause FROM auth_credentials WHERE provider = 'google-antigravity'"
@@ -233,7 +275,8 @@ export function removeStoredAccount(
 
   for (const dbPath of dbPaths) {
     try {
-      const db = new Database(dbPath);
+      const db = openSqlite(dbPath, false);
+      if (!db) continue;
       const rows = db
         .query(
           "SELECT id, identity_key FROM auth_credentials WHERE provider = 'google-antigravity'"

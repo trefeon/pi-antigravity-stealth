@@ -21,9 +21,9 @@ import {
   OAUTH_TOKEN_URL,
   OAUTH_USERINFO_URL,
   REDIRECT_URI,
-} from "./constants";
-import { buildHubUserAgent } from "./manifest";
-import { getBuiltinAntigravityClientCredentials } from "./omp-builtin";
+} from "./constants.ts";
+import { buildHubUserAgent } from "./manifest.ts";
+import { getBuiltinAntigravityClientCredentials } from "./omp-builtin.ts";
 
 export interface AntigravityCredentials {
   access_token: string;

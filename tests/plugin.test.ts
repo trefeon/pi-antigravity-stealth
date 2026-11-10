@@ -190,6 +190,17 @@ describe("pi-antigravity-stealth Plugin", () => {
     expect(registeredCmd).toBe("agy");
   });
 
+  it("registers cleanly on Pi hosts where pi.logger is absent", async () => {
+    let registeredId = "";
+    await antigravityPlugin({
+      registerProvider(id: string) {
+        registeredId = id;
+      },
+      registerCommand() {},
+    });
+    expect(registeredId).toBe("google-antigravity");
+  });
+
   it("parses GitHub releases/latest redirect tags without calling api.github.com", async () => {
     expect(parseReleaseTagFromLocation("/trefeon/pi-antigravity-stealth/releases/tag/v1.2.3")).toEqual({
       tag: "v1.2.3",

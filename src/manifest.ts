@@ -4,7 +4,7 @@
  * Dynamic Antigravity Hub version fetcher and canonical User-Agent generator.
  */
 
-import { FALLBACK_CL, FALLBACK_VERSION, MANIFEST_URL } from "./constants";
+import { FALLBACK_CL, FALLBACK_VERSION, MANIFEST_URL } from "./constants.ts";
 
 export interface VersionInfo {
   version: string;

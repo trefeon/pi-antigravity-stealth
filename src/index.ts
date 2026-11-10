@@ -8,11 +8,11 @@
  * structured API key fields, Hub manifest sync, and /agy account commands).
  */
 
-import { FALLBACK_PROJECT_ID } from "./constants";
-import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest";
-import { hasCustomOAuthClient, loginWithBrowser, refreshAccessToken } from "./auth";
-import { getBuiltinAntigravityDefinition } from "./omp-builtin";
-import { createAntigravityUsageProvider } from "./usage";
+import { FALLBACK_PROJECT_ID } from "./constants.ts";
+import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest.ts";
+import { hasCustomOAuthClient, loginWithBrowser, refreshAccessToken } from "./auth.ts";
+import { getBuiltinAntigravityDefinition } from "./omp-builtin.ts";
+import { createAntigravityUsageProvider } from "./usage.ts";
 import {
   listStoredAccounts,
   maskEmail,
@@ -20,13 +20,13 @@ import {
   removeStoredAccount,
   restoreAllStoredAccounts,
   saveAccountToAgentDb,
-} from "./accounts";
+} from "./accounts.ts";
 import {
   detectInstall,
   formatUpdateResult,
   maybeAutoUpdate,
   pendingUpdate,
-} from "./updater";
+} from "./updater.ts";
 
 interface ExtensionCommandContext {
   ui?: {
@@ -48,10 +48,10 @@ interface ExtensionAPI {
     event: string,
     handler: (event: unknown, ctx?: ExtensionCommandContext) => Promise<void> | void
   ): void;
-  logger: {
-    info(msg: string): void;
-    warn(msg: string): void;
-    error(msg: string): void;
+  logger?: {
+    info?(msg: string): void;
+    warn?(msg: string): void;
+    error?(msg: string): void;
   };
 }
 
@@ -405,13 +405,13 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
         if (ctx.ui) {
           ctx.ui.notify(formatUpdateResult(result), level);
         } else {
-          pi.logger.info(formatUpdateResult(result));
+          pi.logger?.info?.(formatUpdateResult(result));
         }
       })
       .catch(() => {});
   });
 
-  pi.logger.info(
+  pi.logger?.info?.(
     `pi-antigravity-stealth active (Hub v${version}, cl=${changelist}, ${activeCount} stored accounts loaded)`
   );
 }
