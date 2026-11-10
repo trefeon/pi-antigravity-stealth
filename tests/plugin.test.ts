@@ -1,9 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import antigravityPlugin from "../src/index.ts";
-import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "../src/manifest.ts";
+import { buildHubUserAgent, getLiveHubVersion } from "../src/manifest.ts";
 import { getEffectiveClientId, getEffectiveClientSecret } from "../src/auth.ts";
 import { DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET } from "../src/constants.ts";
-import { listStoredAccounts, maskEmail, restoreAllStoredAccounts } from "../src/accounts.ts";
+import {
+  listStoredAccounts,
+  maskEmail,
+  removeStoredAccount,
+} from "../src/accounts.ts";
 
 describe("pi-antigravity-stealth Plugin", () => {
   it("resolves the current live or fallback Hub version and changelist", async () => {
@@ -14,7 +18,9 @@ describe("pi-antigravity-stealth Plugin", () => {
 
   it("builds the canonical Hub User-Agent matching official Google format", async () => {
     const ua = await buildHubUserAgent();
-    expect(ua).toMatch(/^antigravity\/hub\/[0-9]+\.[0-9]+\.[0-9]+ \(aidev_client; os_type=(windows|darwin|linux); arch=(amd64|arm64)(; cl=[0-9]+)?\)$/);
+    expect(ua).toMatch(
+      /^antigravity\/hub\/[0-9]+\.[0-9]+\.[0-9]+ \(aidev_client; os_type=(windows|darwin|linux); arch=(amd64|arm64)(; cl=[0-9]+)?\)$/
+    );
   });
 
   it("masks email addresses for logging and status displays", () => {
@@ -26,10 +32,15 @@ describe("pi-antigravity-stealth Plugin", () => {
   it("discovers existing stored Antigravity accounts from local agent.db", () => {
     const accounts = listStoredAccounts();
     expect(Array.isArray(accounts)).toBe(true);
-    // On this workstation, 12 accounts exist in agent.db
     if (accounts.length > 0) {
       expect(accounts[0]?.id).toBeDefined();
     }
+  });
+
+  it("handles removeStoredAccount gracefully when target is not found", () => {
+    const res = removeStoredAccount("non-existent-account-xyz-12345");
+    expect(res.success).toBe(false);
+    expect(res.affected).toBe(0);
   });
 
   it("uses custom OAuth client credentials when provided in env", () => {

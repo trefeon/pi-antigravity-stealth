@@ -143,11 +143,12 @@ Run `/agy` inside your OMP or Pi session:
 | Command | Action |
 |---|---|
 | `/agy status` | Shows connection endpoint, live Hub version, CL, and active account count |
-| `/agy accounts` | Lists all saved Antigravity accounts in `agent.db` with masked emails |
+| `/agy accounts` | Lists all saved Antigravity accounts in `agent.db` with IDs and masked emails |
+| `/agy tier [email\|id]` | Probes live Google subscription tier (**Free**, **Google AI Plus**, **Google AI Pro**, **Google AI Ultra**) |
+| `/agy remove <email\|id>` | Deactivates an account (`disabled_cause = 'deleted by user'`; use `--hard` for permanent deletion) |
 | `/agy restore` | Clears disabled flags on existing accounts and re-activates them in the session pool |
 | `/agy login` | Starts an interactive PKCE browser sign-in for a new Google account |
 | `/agy manifest` | Forces an immediate refresh check against Google's live update manifest |
-
 ---
 
 ## Stealth Wire Signature & Anti-Ban Architecture

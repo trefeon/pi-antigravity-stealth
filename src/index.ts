@@ -9,7 +9,13 @@
 import { ANTIGRAVITY_ENDPOINT_DAILY } from "./constants";
 import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest";
 import { loginWithBrowser, refreshAccessToken } from "./auth";
-import { listStoredAccounts, maskEmail, restoreAllStoredAccounts } from "./accounts";
+import {
+  listStoredAccounts,
+  maskEmail,
+  probeAccountTier,
+  removeStoredAccount,
+  restoreAllStoredAccounts,
+} from "./accounts";
 
 interface ExtensionCommandContext {
   ui?: {
@@ -148,10 +154,10 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
     },
   });
 
-  // Slash commands for status, accounts, recovery, and login
+  // Slash commands for status, accounts, recovery, tiers, and removal
   if (typeof pi.registerCommand === "function") {
     pi.registerCommand("agy", {
-      description: "Manage Google Antigravity stealth status and accounts",
+      description: "Manage Google Antigravity stealth status, accounts, and tiers",
       handler: async (args: string, ctx?: ExtensionCommandContext) => {
         function notify(msg: string, level: "info" | "warning" | "error" = "info") {
           if (ctx?.hasUI && ctx.ui) {
@@ -163,6 +169,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
 
         const parts = args.trim().split(/\s+/);
         const subcmd = parts[0]?.toLowerCase() || "status";
+        const param = parts[1];
 
         if (subcmd === "accounts") {
           const accounts = listStoredAccounts();
@@ -177,9 +184,56 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
               : a.isExpired
               ? "[Token Expired - refreshable]"
               : "[Active]";
-            lines.push(`  • ${maskEmail(a.email || "Unknown")} (Project: ${a.projectId || "default"}) ${status}`);
+            lines.push(
+              `  • #${a.id} ${maskEmail(a.email || "Unknown")} (Project: ${a.projectId || "default"}) ${status}`
+            );
+          }
+          lines.push(`\nUse '/agy tier <id>' to inspect account subscription tier.`);
+          lines.push(`Use '/agy remove <email|id>' to deactivate an account.`);
+          notify(lines.join("\n"));
+          return;
+        }
+
+        if (subcmd === "tier" || subcmd === "tiers") {
+          const accounts = listStoredAccounts();
+          let targets = accounts.filter((a) => a.disabledCause === null && a.token);
+
+          if (param) {
+            const needle = param.toLowerCase();
+            targets = targets.filter(
+              (a) => String(a.id) === needle || (a.email && a.email.toLowerCase().includes(needle))
+            );
+          }
+
+          if (targets.length === 0) {
+            notify(`No active Antigravity account found matching "${param || ""}".`);
+            return;
+          }
+
+          notify(`Probing subscription tier for ${targets.length} account(s)...`);
+          const lines = [`Google Antigravity Account Tiers:`];
+
+          for (const a of targets) {
+            if (!a.token) continue;
+            const tier = await probeAccountTier(a.token);
+            const badge = tier.isPaid ? `[${tier.tierName}] 🌟` : `[${tier.tierName}]`;
+            lines.push(`  • #${a.id} ${maskEmail(a.email || "Unknown")}: ${badge}`);
+            if (tier.upgradeText) {
+              lines.push(`      Note: ${tier.upgradeText}`);
+            }
           }
           notify(lines.join("\n"));
+          return;
+        }
+
+        if (subcmd === "remove" || subcmd === "delete") {
+          if (!param) {
+            notify("Usage: /agy remove <email|id> [--hard]\nExample: /agy remove user@gmail.com", "warning");
+            return;
+          }
+          const hard = parts.includes("--hard") || parts.includes("-f");
+          const result = removeStoredAccount(param, hard);
+          notify(result.message, result.success ? "info" : "error");
           return;
         }
 
@@ -224,11 +278,13 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           `Saved Accounts in agent.db: ${activeCount} active (${storedAccounts.length} total)`,
           ``,
           `Subcommands:`,
-          `  /agy status     - Show connection and stealth status (default)`,
-          `  /agy accounts   - List saved Antigravity accounts in agent.db`,
-          `  /agy restore    - Re-activate all saved accounts`,
-          `  /agy login      - Authenticate a new Google account`,
-          `  /agy manifest   - Refresh Google Hub release version`,
+          `  /agy status               - Show connection and stealth status (default)`,
+          `  /agy accounts             - List saved Antigravity accounts in agent.db`,
+          `  /agy tier [email|id]      - Probe subscription tier (Free, Plus, Pro, Ultra)`,
+          `  /agy remove <email|id>    - Deactivate an account (soft delete)`,
+          `  /agy restore              - Re-activate all soft-deleted accounts`,
+          `  /agy login                - Authenticate a new Google account`,
+          `  /agy manifest             - Refresh Google Hub release version`,
         ];
         notify(lines.join("\n"));
       },
