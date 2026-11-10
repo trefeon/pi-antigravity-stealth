@@ -2,6 +2,8 @@
  * src/auth.ts
  *
  * OAuth authentication, token refresh, and GCP project discovery for Antigravity.
+ * Delegates to OMP's shipped Google Antigravity client credentials unless custom
+ * ANTIGRAVITY_CLIENT_ID / ANTIGRAVITY_CLIENT_SECRET env vars are explicitly configured.
  */
 
 import * as http from "http";
@@ -21,6 +23,7 @@ import {
   REDIRECT_URI,
 } from "./constants";
 import { buildHubUserAgent } from "./manifest";
+import { getBuiltinAntigravityClientCredentials } from "./omp-builtin";
 
 export interface AntigravityCredentials {
   access_token: string;
@@ -29,6 +32,13 @@ export interface AntigravityCredentials {
   expires_at?: number;
   projectId?: string;
   email?: string;
+  accountId?: string;
+}
+
+export interface BrowserLoginCallbacks {
+  onProgress?: (message: string) => void;
+  onAuth?: (info: { url: string; instructions?: string }) => void;
+  signal?: AbortSignal;
 }
 
 export function getEffectiveClientId(): string {
@@ -39,9 +49,38 @@ export function getEffectiveClientSecret(): string {
   return process.env.ANTIGRAVITY_CLIENT_SECRET?.trim() || DEFAULT_CLIENT_SECRET;
 }
 
+export function hasCustomOAuthClient(): boolean {
+  return Boolean(process.env.ANTIGRAVITY_CLIENT_ID?.trim() && process.env.ANTIGRAVITY_CLIENT_SECRET?.trim());
+}
+
+export function resolveOAuthClientCredentials(): { clientId: string; clientSecret: string } {
+  const customId = getEffectiveClientId();
+  const customSecret = getEffectiveClientSecret();
+  if (customId && customSecret) {
+    return { clientId: customId, clientSecret: customSecret };
+  }
+  const builtin = getBuiltinAntigravityClientCredentials();
+  if (builtin) {
+    return builtin;
+  }
+  return { clientId: customId, clientSecret: customSecret };
+}
+
 export async function loginWithBrowser(
-  onProgress?: (message: string) => void
+  callbacksOrProgress?: ((message: string) => void) | BrowserLoginCallbacks
 ): Promise<AntigravityCredentials> {
+  const callbacks: BrowserLoginCallbacks =
+    typeof callbacksOrProgress === "function"
+      ? { onProgress: callbacksOrProgress }
+      : callbacksOrProgress ?? {};
+
+  const { clientId, clientSecret } = resolveOAuthClientCredentials();
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "Google Antigravity OAuth client credentials are unavailable. Set ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET or run inside OMP."
+    );
+  }
+
   const verifier = crypto
     .randomBytes(32)
     .toString("base64")
@@ -58,9 +97,6 @@ export async function loginWithBrowser(
     .replace(/=/g, "");
   const state = crypto.randomBytes(16).toString("hex");
 
-  const clientId = getEffectiveClientId();
-  const clientSecret = getEffectiveClientSecret();
-
   const authUrl = new URL(OAUTH_AUTH_URL);
   authUrl.searchParams.set("client_id", clientId);
   authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
@@ -74,6 +110,21 @@ export async function loginWithBrowser(
 
   const { promise, resolve, reject } = Promise.withResolvers<AntigravityCredentials>();
   let resolved = false;
+
+  const cleanupAbort = () => {
+    if (!resolved) {
+      resolved = true;
+      try {
+        server.close();
+      } catch {}
+      reject(new Error("Antigravity login cancelled."));
+    }
+  };
+
+  if (callbacks.signal?.aborted) {
+    throw new Error("Antigravity login cancelled.");
+  }
+  callbacks.signal?.addEventListener("abort", cleanupAbort, { once: true });
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -116,8 +167,9 @@ export async function loginWithBrowser(
       server.close();
       if (resolved) return;
       resolved = true;
+      callbacks.signal?.removeEventListener("abort", cleanupAbort);
 
-      onProgress?.("Exchanging authorization code for tokens...");
+      callbacks.onProgress?.("Exchanging authorization code for tokens...");
       const userAgent = await buildHubUserAgent();
 
       const tokenParams = new URLSearchParams({
@@ -137,6 +189,7 @@ export async function loginWithBrowser(
           Accept: "application/json",
         },
         body: tokenParams.toString(),
+        signal: callbacks.signal,
       });
 
       if (!tokenRes.ok) {
@@ -158,6 +211,7 @@ export async function loginWithBrowser(
             Authorization: `Bearer ${accessToken}`,
             "User-Agent": userAgent,
           },
+          signal: callbacks.signal,
         });
         if (userinfoRes.ok) {
           const userinfo = (await userinfoRes.json()) as Record<string, unknown>;
@@ -168,7 +222,7 @@ export async function loginWithBrowser(
       } catch {}
 
       // Discover GCP Project ID
-      onProgress?.("Discovering Cloud Code Assist project...");
+      callbacks.onProgress?.("Discovering Cloud Code Assist project...");
       let projectId = FALLBACK_PROJECT_ID;
       try {
         const projRes = await fetch(`${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal:loadCodeAssist`, {
@@ -181,15 +235,16 @@ export async function loginWithBrowser(
           body: JSON.stringify({
             metadata: { ideType: "ANTIGRAVITY" },
           }),
+          signal: callbacks.signal,
         });
         if (projRes.ok) {
           const projData = (await projRes.json()) as Record<string, unknown>;
           const rawProject = projData.cloudaicompanionProject;
-          if (typeof rawProject === "string") {
+          if (typeof rawProject === "string" && rawProject.length > 0) {
             projectId = rawProject;
           } else if (rawProject && typeof rawProject === "object" && "id" in rawProject) {
             const innerId = rawProject.id;
-            if (typeof innerId === "string") {
+            if (typeof innerId === "string" && innerId.length > 0) {
               projectId = innerId;
             }
           }
@@ -214,8 +269,15 @@ export async function loginWithBrowser(
   });
 
   server.listen(CALLBACK_PORT, "127.0.0.1", () => {
-    onProgress?.(`Opening browser for Antigravity sign-in: ${authUrl.toString()}`);
-    openBrowser(authUrl.toString());
+    const urlStr = authUrl.toString();
+    callbacks.onAuth?.({
+      url: urlStr,
+      instructions: "Complete the sign-in in your browser.",
+    });
+    callbacks.onProgress?.(`Opening browser for Antigravity sign-in: ${urlStr}`);
+    if (!callbacks.onAuth) {
+      openBrowser(urlStr);
+    }
   });
 
   server.on("error", (err) => {
@@ -230,10 +292,15 @@ export async function loginWithBrowser(
 
 export async function refreshAccessToken(
   refreshToken: string,
-  existingProjectId?: string
+  existingProjectId?: string,
+  options?: { email?: string; accountId?: string; signal?: AbortSignal }
 ): Promise<AntigravityCredentials> {
-  const clientId = getEffectiveClientId();
-  const clientSecret = getEffectiveClientSecret();
+  const { clientId, clientSecret } = resolveOAuthClientCredentials();
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "Google Antigravity OAuth client credentials are unavailable for token refresh."
+    );
+  }
   const userAgent = await buildHubUserAgent();
 
   const params = new URLSearchParams({
@@ -251,6 +318,7 @@ export async function refreshAccessToken(
       Accept: "application/json",
     },
     body: params.toString(),
+    signal: options?.signal,
   });
 
   if (!res.ok) {
@@ -269,6 +337,8 @@ export async function refreshAccessToken(
     expires_in: expiresIn,
     expires_at: Date.now() + expiresIn * 1000 - 300000,
     projectId: existingProjectId || FALLBACK_PROJECT_ID,
+    ...(options?.email ? { email: options.email } : {}),
+    ...(options?.accountId ? { accountId: options.accountId } : {}),
   };
 }
 

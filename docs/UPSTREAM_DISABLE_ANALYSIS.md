@@ -104,4 +104,4 @@ This immediately:
 1. Unlocks `providerPauseReason`, allowing OMP's session pool to load stored accounts from `agent.db`.
 2. Re-enables model discovery for all 13 built-in Antigravity models.
 3. Bypasses the login block without patching binary bundles.
-4. Packages as a standard plugin: `omp plugin install pi-antigravity-stealth`.
+4. Installs cleanly without npm via `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows), or `omp plugin install github:trefeon/pi-antigravity-stealth`.

@@ -11,7 +11,7 @@ To maintain and safely use Google Antigravity on OMP, four distinct architectura
 | **Maintenance** | Low (Zero edits to node_modules) | Very Low (1-command post-update) | High (Syncing upstream commits) | Medium (Independent process) |
 | **Update Survival** | Survives all OMP/Pi updates | Must re-run after `omp update` | Requires custom build/install | Survives all updates |
 | **ToS Evasion / Stealth** | High (1:1 Hub spoofing, sanitized headers, custom IDs) | None (Default OMP headers) | High (Custom headers/UA/Client IDs) | High (Arbitrary header control) |
-| **Complexity** | Turnkey (`omp plugin install`) | 1 Bun script | Full monorepo fork | Standalone Go/TS daemon |
+| **Complexity** | Turnkey (1-line script or `github:` install) | 1 Bun script | Full monorepo fork | Standalone Go/TS daemon |
 | **Credential Recovery** | Automatic (`agent.db` scan & `/agy restore`) | Manual SQLite edits | Manual | Requires config file import |
 ---
 
@@ -38,9 +38,9 @@ This causes `providerPauseReason` to return `undefined`, immediately:
 2. Unblocking model discovery.
 3. Preventing `assertProviderEnabled` from throwing `ProviderDisabledError`.
 
-#### Implementation: `pi-antigravity-stealth` (Published on npm)
-* **Pros**: Survives all `omp update` cycles, zero edits to `node_modules`. Implements 1:1 Hub client spoofing, dynamic manifest synchronization, and automatic recovery of existing saved credentials in `agent.db`. Supports custom OAuth client ID/secret isolation.
-* **Cons**: None. Available directly via `omp plugin install pi-antigravity-stealth`.
+#### Implementation: `pi-antigravity-stealth` (GitHub Releases, no npm required)
+* **Pros**: Survives all `omp update` cycles, zero edits to `node_modules`. Implements 1:1 Hub client spoofing, dynamic manifest synchronization, GitHub Release auto-updating (`src/updater.ts`), and automatic recovery of existing saved credentials in `agent.db`. Supports custom OAuth client ID/secret isolation.
+* **Cons**: None. Install via `scripts/install.sh` (Linux/macOS), `scripts/install.ps1` (Windows), or `omp plugin install github:trefeon/pi-antigravity-stealth`.
 
 ---
 

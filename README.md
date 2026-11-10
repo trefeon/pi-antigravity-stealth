@@ -1,8 +1,8 @@
 # pi-antigravity-stealth
 
-[![npm version](https://img.shields.io/npm/v/pi-antigravity-stealth.svg?color=blue)](https://www.npmjs.com/package/pi-antigravity-stealth)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![GitHub Release](https://img.shields.io/github/v/release/trefeon/pi-antigravity-stealth)](https://github.com/trefeon/pi-antigravity-stealth/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![CI](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/ci.yml/badge.svg)](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/ci.yml)
 [![Upstream Watcher](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/upstream-watch.yml/badge.svg)](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/upstream-watch.yml)
 
 > Native Oh My Pi (OMP) and Pi Coding Agent extension providing stealth unpause for Google Antigravity, 1:1 Hub client spoofing, and automatic saved credential recovery.
@@ -15,22 +15,32 @@ In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622)
 
 `pi-antigravity-stealth` is a standalone, update-safe plugin for OMP and Pi that:
 
-1. **Unpauses `google-antigravity` Natively**: Uses OMP's built-in `registerProvider` escape hatch (`customOAuthProviders`) to unpause all 13 Antigravity models without editing files in `node_modules` or breaking on `omp update`.
-2. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.30.0`, CL `6386428939206656`) and sends strictly legitimate Hub request signatures with zero leaked telemetry headers.
-3. **Automatic Credential Recovery**: Discovers existing saved OAuth accounts from `agent.db` (`~/.omp/agent/agent.db` and `~/.pi/agent/agent.db`) and unpauses them so you do not have to log in again.
-4. **Custom Client ID Support**: Allows isolating your Google account with private OAuth client credentials (`ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET`) to avoid shared-pool bans.
-5. **Continuous Upstream Automation**: Scheduled GitHub Actions monitor Google Hub manifests, CLI binaries, and upstream OMP KDL rules daily.
+1. **Unpauses & Delegates to Built-in Antigravity**: Uses OMP's built-in `registerProvider` escape hatch (`customOAuthProviders`) while delegating OAuth, token refresh, endpoint auto-failover, and wire transport to OMP's already-shipped `google-antigravity` implementation.
+2. **Argon Quota Counter Isolation**: Overrides usage parsing (`src/usage.ts`) so exhausted Gemini 4 Argon weekly buckets (`gemini-argon-*`) stay in their own `argon` counter instead of blocking healthy Gemini (`google`) quota across Pro accounts.
+3. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.30.0`, CL `6386428939206656`) and keeps `PI_AI_ANTIGRAVITY_*` aligned with official Hub signatures.
+4. **Automatic Credential Recovery**: Discovers existing saved OAuth accounts from `agent.db` (`~/.omp/agent/agent.db` and `~/.pi/agent/agent.db`) and restores them via `/agy restore`.
+5. **Custom Client ID Support**: Allows isolating your Google account with private OAuth client credentials (`ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET`), falling back cleanly to OMP's shipped client config when unset.
+6. **GitHub Release Auto-Updater**: Checks GitHub Releases on interactive session start (every 6 hours, zero API quota) and upgrades script/git installs in place without npm; `/agy update` checks and upgrades immediately.
+7. **Continuous Upstream Automation**: Scheduled GitHub Actions monitor Google Hub manifests, CLI binaries, and upstream OMP KDL rules daily.
 
 ---
 
-## Installation Guide
+## Installation Guide (No npm Required)
 
-### For Oh My Pi (OMP)
+### Recommended: One-Line Script Install (Linux, macOS & Windows)
 
-Run the plugin install command directly:
+The installer downloads the latest [GitHub Release](https://github.com/trefeon/pi-antigravity-stealth/releases) into `~/.pi-antigravity-stealth` (`%USERPROFILE%\.pi-antigravity-stealth` on Windows), cleans up any legacy npm install if present, links into **OMP** (`omp plugin link`) and/or **Pi** (`pi install`), and enables automatic GitHub Release updates.
+
+**Linux / macOS (bash):**
 
 ```bash
-omp plugin install pi-antigravity-stealth
+curl -fsSL https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.sh | bash
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.ps1 | iex
 ```
 
 Verify that the plugin is loaded and all 13 models are unlocked:
@@ -40,23 +50,37 @@ omp plugin list
 omp models google-antigravity
 ```
 
-### For Pi Coding Agent
-
-Install via the Pi CLI:
+**Pin a specific release or uninstall:**
 
 ```bash
-pi plugin install pi-antigravity-stealth
+# Linux / macOS — specific version
+curl -fsSL https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.sh | bash -s -- --version v1.1.0
+
+# Linux / macOS — uninstall (preserves agent.db accounts)
+bash ~/.pi-antigravity-stealth/scripts/install.sh --uninstall
 ```
 
-Alternatively, load it directly via extension flag:
+```powershell
+# Windows — specific version
+$env:PI_ANTIGRAVITY_VERSION = "v1.1.0"; irm https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.ps1 | iex
+
+# Windows — uninstall (preserves agent.db accounts)
+& "$env:USERPROFILE\.pi-antigravity-stealth\scripts\install.ps1" -Uninstall
+```
+
+### Alternative: Direct Git Install or Local Checkout
+
+Install directly from GitHub without npm:
 
 ```bash
-pi --extension pi-antigravity-stealth
+# OMP
+omp plugin install github:trefeon/pi-antigravity-stealth
+
+# Pi Coding Agent
+pi install git:github.com/trefeon/pi-antigravity-stealth
 ```
 
-### Local Development / Linking
-
-If you cloned this repository locally:
+Or link a local clone:
 
 ```bash
 git clone https://github.com/trefeon/pi-antigravity-stealth.git
@@ -65,8 +89,8 @@ cd pi-antigravity-stealth
 # Link to OMP
 omp plugin link .
 
-# Or link to Pi
-pi plugin link .
+# Or install into Pi
+pi install .
 ```
 
 ---
@@ -120,6 +144,15 @@ OMP natively pools all active Antigravity accounts stored in `agent.db`. When yo
 - **Tier Verification**: Run `/agy tier <id>` to check subscription levels (**Google AI Ultra**, **Google AI Pro**, **Google AI Plus**, **Free Tier**).
 - **Pool Quota Inspection**: Run `omp usage` from your terminal at any time to monitor capacity and reset countdowns across your entire account pool.
 
+### 5. Automatic Updates (GitHub Releases)
+
+Script-installed copies (`~/.pi-antigravity-stealth`) check `github.com/trefeon/pi-antigravity-stealth/releases/latest` in the background once every 6 hours on interactive session start (via HTTP redirect, with zero GitHub API quota or npm usage).
+
+- **Auto-update**: Downloads the matching GitHub Release archive (`.tar.gz` on Linux/macOS, `.zip` on Windows), verifies `package.json`, replaces files in place, and notifies you to restart OMP/Pi.
+- **Manual trigger**: Run `/agy update` anytime inside OMP/Pi to check and apply updates immediately.
+- **Disable checks**: Set `PI_ANTIGRAVITY_SKIP_UPDATE_CHECK=1`.
+- **Source checkouts**: Clones containing `.git` are detected as `git` and are never overwritten automatically.
+
 ---
 
 ## Available Models (13 Active Models)
@@ -157,6 +190,7 @@ Run `/agy` inside your OMP or Pi session:
 | `/agy restore` | Clears disabled flags on existing accounts and re-activates them in the session pool |
 | `/agy login` | Starts an interactive PKCE browser sign-in for a new Google account |
 | `/agy manifest` | Forces an immediate refresh check against Google's live update manifest |
+| `/agy update` | Checks GitHub Releases and updates script/git installs in place |
 ---
 
 ## Stealth Wire Signature & Anti-Ban Architecture
@@ -191,8 +225,11 @@ pi-antigravity-stealth/
 ├── package.json                        # Plugin manifest (dual "omp" and "pi" bindings)
 ├── index.ts                            # Root extension export
 ├── src/
-│   ├── index.ts                        # Extension factory and provider registration
-│   ├── auth.ts                         # PKCE OAuth flow, token refresh and project discovery
+│   ├── index.ts                        # Extension factory, built-in delegation, updater & /agy commands
+│   ├── omp-builtin.ts                  # Runtime resolver for OMP's built-in OAuth/usage/rules
+│   ├── usage.ts                        # UsageProvider wrapper isolating Argon from google counter
+│   ├── updater.ts                      # GitHub Release auto-updater (no npm required)
+│   ├── auth.ts                         # PKCE OAuth flow, token refresh, and project discovery
 │   ├── manifest.ts                     # Live Google Hub manifest version synchronizer
 │   ├── accounts.ts                     # agent.db credential discovery and recovery
 │   └── constants.ts                    # Endpoints, scopes, and baseline fallbacks
@@ -202,6 +239,8 @@ pi-antigravity-stealth/
 │   ├── IMPLEMENTATION_STRATEGIES.md    # Tradeoffs: plugin vs patch vs fork vs bridge
 │   └── LEGIT_ANTIGRAVITY_SIGNATURE.md  # Official wire protocol, headers and reverse engineering
 ├── scripts/
+│   ├── install.sh                      # Linux/macOS GitHub Release installer (no npm)
+│   ├── install.ps1                     # Windows PowerShell GitHub Release installer (no npm)
 │   ├── check-upstream-drift.ts         # Automated upstream drift monitor
 │   ├── antigravity-stealth-launcher.ts # Manifest-synced wrapper launcher
 │   ├── antigravity-unpause-extension.ts # Zero-fork extension hook
@@ -217,7 +256,6 @@ pi-antigravity-stealth/
 
 ## Links & Ecosystem
 
-- **npm Package:** [https://www.npmjs.com/package/pi-antigravity-stealth](https://www.npmjs.com/package/pi-antigravity-stealth)
 - **GitHub Repository:** [https://github.com/trefeon/pi-antigravity-stealth](https://github.com/trefeon/pi-antigravity-stealth)
 - **GitHub Releases:** [https://github.com/trefeon/pi-antigravity-stealth/releases](https://github.com/trefeon/pi-antigravity-stealth/releases)
 - **Oh My Pi (OMP):** [https://github.com/can1357/oh-my-pi](https://github.com/can1357/oh-my-pi)

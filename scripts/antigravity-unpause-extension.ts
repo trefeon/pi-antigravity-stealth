@@ -45,8 +45,22 @@ export default function antigravityUnpauseExtension(pi: ExtensionAPI): void {
       },
       getApiKey(credentials) {
         if (credentials && typeof credentials === "object" && "access" in credentials) {
-          const token = credentials.access;
-          if (typeof token === "string") return token;
+          const c = credentials as Record<string, unknown>;
+          const token = typeof c.access === "string" ? c.access : "";
+          if (!token) return "";
+          return JSON.stringify({
+            ...(typeof c.apiEndpoint === "string" ? { apiEndpoint: c.apiEndpoint } : {}),
+            token,
+            ...(typeof c.enterpriseUrl === "string" ? { enterpriseUrl: c.enterpriseUrl } : {}),
+            projectId:
+              typeof c.projectId === "string" && c.projectId.length > 0
+                ? c.projectId
+                : "rising-fact-p41fc",
+            ...(typeof c.refresh === "string" ? { refreshToken: c.refresh } : {}),
+            ...(typeof c.expires === "number" ? { expiresAt: c.expires } : {}),
+            ...(typeof c.email === "string" ? { email: c.email } : {}),
+            ...(typeof c.accountId === "string" ? { accountId: c.accountId } : {}),
+          });
         }
         return "";
       },

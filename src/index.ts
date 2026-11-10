@@ -2,13 +2,17 @@
  * src/index.ts
  *
  * Oh My Pi (OMP) & Pi extension factory for Google Antigravity.
- * Re-enables the paused google-antigravity provider using OMP's native registerProvider escape hatch,
- * enforces live Hub version sync, recovers existing saved accounts, and strips non-compliant headers.
+ * Unpauses OMP's already-shipped google-antigravity provider using registerProvider(),
+ * delegates login/refresh/wire transport to OMP's built-in implementation unless custom
+ * client credentials are configured, and patches only what is broken (Argon quota isolation,
+ * structured API key fields, Hub manifest sync, and /agy account commands).
  */
 
-import { ANTIGRAVITY_ENDPOINT_DAILY } from "./constants";
+import { FALLBACK_PROJECT_ID } from "./constants";
 import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest";
-import { loginWithBrowser, refreshAccessToken } from "./auth";
+import { hasCustomOAuthClient, loginWithBrowser, refreshAccessToken } from "./auth";
+import { getBuiltinAntigravityDefinition } from "./omp-builtin";
+import { createAntigravityUsageProvider } from "./usage";
 import {
   listStoredAccounts,
   maskEmail,
@@ -17,6 +21,12 @@ import {
   restoreAllStoredAccounts,
   saveAccountToAgentDb,
 } from "./accounts";
+import {
+  detectInstall,
+  formatUpdateResult,
+  maybeAutoUpdate,
+  pendingUpdate,
+} from "./updater";
 
 interface ExtensionCommandContext {
   ui?: {
@@ -34,14 +44,18 @@ interface ExtensionAPI {
       handler: (args: string, ctx?: ExtensionCommandContext) => Promise<void> | void;
     }
   ): void;
+  on?(
+    event: string,
+    handler: (event: unknown, ctx?: ExtensionCommandContext) => Promise<void> | void
+  ): void;
   logger: {
-    info(msg: string, ...args: unknown[]): void;
-    warn(msg: string, ...args: unknown[]): void;
-    error(msg: string, ...args: unknown[]): void;
+    info(msg: string): void;
+    warn(msg: string): void;
+    error(msg: string): void;
   };
 }
 
-function extractCredentials(c: Record<string, unknown>) {
+export function extractCredentials(c: Record<string, unknown>) {
   const token =
     typeof c.access === "string"
       ? c.access
@@ -58,7 +72,7 @@ function extractCredentials(c: Record<string, unknown>) {
       ? c.projectId
       : typeof c.project_id === "string" && c.project_id.length > 0
       ? c.project_id
-      : "aicode-consumers";
+      : FALLBACK_PROJECT_ID;
 
   const refreshToken =
     typeof c.refresh === "string"
@@ -78,79 +92,146 @@ function extractCredentials(c: Record<string, unknown>) {
       ? c.expiresAt
       : undefined;
 
-  const email = typeof c.email === "string" ? c.email : undefined;
+  const email = typeof c.email === "string" && c.email.length > 0 ? c.email : undefined;
+  const accountId = typeof c.accountId === "string" && c.accountId.length > 0 ? c.accountId : undefined;
+  const apiEndpoint = typeof c.apiEndpoint === "string" && c.apiEndpoint.length > 0 ? c.apiEndpoint : undefined;
+  const enterpriseUrl = typeof c.enterpriseUrl === "string" && c.enterpriseUrl.length > 0 ? c.enterpriseUrl : undefined;
 
-  return { token, projectId, refreshToken, expiresAt, email };
+  return { token, projectId, refreshToken, expiresAt, email, accountId, apiEndpoint, enterpriseUrl };
+}
+
+export function formatStructuredApiKey(credentials: Record<string, unknown>): string {
+  const creds = extractCredentials(credentials);
+  if (!creds.token) return "";
+
+  // Matches OMP's getOAuthApiKey structured credential envelope (`apiKeyFormat: "structured"`).
+  return JSON.stringify({
+    ...(creds.apiEndpoint !== undefined ? { apiEndpoint: creds.apiEndpoint } : {}),
+    token: creds.token,
+    ...(creds.enterpriseUrl !== undefined ? { enterpriseUrl: creds.enterpriseUrl } : {}),
+    projectId: creds.projectId,
+    ...(creds.refreshToken !== undefined ? { refreshToken: creds.refreshToken } : {}),
+    ...(creds.expiresAt !== undefined ? { expiresAt: creds.expiresAt } : {}),
+    ...(creds.email !== undefined ? { email: creds.email } : {}),
+    ...(creds.accountId !== undefined ? { accountId: creds.accountId } : {}),
+  });
+}
+
+async function runUnifiedLogin(callbacks: Record<string, unknown>): Promise<Record<string, unknown>> {
+  if (hasCustomOAuthClient()) {
+    const creds = await loginWithBrowser(callbacks);
+    return {
+      access: creds.access_token,
+      accessToken: creds.access_token,
+      refresh: creds.refresh_token,
+      refreshToken: creds.refresh_token,
+      expires: creds.expires_at,
+      expiresAt: creds.expires_at,
+      projectId: creds.projectId,
+      email: creds.email,
+    };
+  }
+
+  const builtin = await getBuiltinAntigravityDefinition();
+  if (builtin?.login) {
+    return builtin.login(callbacks);
+  }
+
+  const creds = await loginWithBrowser(callbacks);
+  return {
+    access: creds.access_token,
+    accessToken: creds.access_token,
+    refresh: creds.refresh_token,
+    refreshToken: creds.refresh_token,
+    expires: creds.expires_at,
+    expiresAt: creds.expires_at,
+    projectId: creds.projectId,
+    email: creds.email,
+  };
+}
+
+async function runUnifiedRefresh(credentials: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  if (!credentials || typeof credentials !== "object") {
+    throw new Error("Invalid Antigravity credentials object");
+  }
+  const c = credentials as Record<string, unknown>;
+  const extracted = extractCredentials(c);
+  if (!extracted.refreshToken) {
+    return c;
+  }
+
+  if (!hasCustomOAuthClient()) {
+    const builtin = await getBuiltinAntigravityDefinition();
+    if (builtin?.refreshToken) {
+      const refreshed = await builtin.refreshToken(c, signal);
+      return {
+        ...c,
+        ...refreshed,
+        projectId:
+          typeof refreshed.projectId === "string" && refreshed.projectId.length > 0
+            ? refreshed.projectId
+            : extracted.projectId,
+        ...(typeof refreshed.email === "string" && refreshed.email.length > 0
+          ? { email: refreshed.email }
+          : extracted.email
+          ? { email: extracted.email }
+          : {}),
+        ...(typeof refreshed.accountId === "string" && refreshed.accountId.length > 0
+          ? { accountId: refreshed.accountId }
+          : extracted.accountId
+          ? { accountId: extracted.accountId }
+          : {}),
+      };
+    }
+  }
+
+  const refreshed = await refreshAccessToken(extracted.refreshToken, extracted.projectId, {
+    email: extracted.email,
+    accountId: extracted.accountId,
+    signal,
+  });
+  return {
+    ...c,
+    access: refreshed.access_token,
+    accessToken: refreshed.access_token,
+    refresh: refreshed.refresh_token,
+    refreshToken: refreshed.refresh_token,
+    expires: refreshed.expires_at,
+    expiresAt: refreshed.expires_at,
+    projectId: refreshed.projectId,
+  };
 }
 
 export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void> {
   const { version, changelist } = await getLiveHubVersion();
   const { os, arch } = resolvePlatform();
 
-  // Prime environment so any downstream OMP core components pick up legitimate values
-  process.env.PI_AI_ANTIGRAVITY_VERSION = version;
-  process.env.PI_AI_ANTIGRAVITY_CL = changelist;
-  process.env.PI_AI_ANTIGRAVITY_OS = os;
-  process.env.PI_AI_ANTIGRAVITY_ARCH = arch;
+  // Prime environment defaults only when unset so user overrides remain authoritative
+  process.env.PI_AI_ANTIGRAVITY_VERSION ??= version;
+  process.env.PI_AI_ANTIGRAVITY_CL ??= changelist;
+  process.env.PI_AI_ANTIGRAVITY_OS ??= os;
+  process.env.PI_AI_ANTIGRAVITY_ARCH ??= arch;
 
   // Inventory saved accounts in agent.db
   const storedAccounts = listStoredAccounts();
   const activeCount = storedAccounts.filter((a) => a.disabledCause === null).length;
 
+  const baseUrlOverride = process.env.ANTIGRAVITY_BASE_URL?.trim();
+
   // Registering an OAuth handler under "google-antigravity" populates customOAuthProviders,
   // causing providerPauseReason("google-antigravity") to return undefined in OMP/Pi core.
+  // Preserve OMP's built-in endpoint auto-failover ([daily, sandbox]), model discovery, and
+  // google-gemini-cli transport, patching only OAuth delegation and Argon usage isolation.
   pi.registerProvider("google-antigravity", {
-    baseUrl: ANTIGRAVITY_ENDPOINT_DAILY,
+    ...(baseUrlOverride ? { baseUrl: baseUrlOverride } : {}),
+    usage: createAntigravityUsageProvider(),
     oauth: {
       name: "Google Antigravity (Stealth Plugin)",
-      async login(callbacks: { onProgress?: (msg: string) => void }) {
-        const creds = await loginWithBrowser(callbacks.onProgress);
-        return {
-          access: creds.access_token,
-          accessToken: creds.access_token,
-          refresh: creds.refresh_token,
-          refreshToken: creds.refresh_token,
-          expires: creds.expires_at,
-          expiresAt: creds.expires_at,
-          projectId: creds.projectId,
-          email: creds.email,
-        };
-      },
-      async refreshToken(credentials: unknown) {
-        if (!credentials || typeof credentials !== "object") {
-          throw new Error("Invalid Antigravity credentials object");
-        }
-        const c = credentials as Record<string, unknown>;
-        const extracted = extractCredentials(c);
-        if (!extracted.refreshToken) {
-          return credentials;
-        }
-
-        const refreshed = await refreshAccessToken(extracted.refreshToken, extracted.projectId);
-        return {
-          ...c,
-          access: refreshed.access_token,
-          accessToken: refreshed.access_token,
-          refresh: refreshed.refresh_token,
-          refreshToken: refreshed.refresh_token,
-          expires: refreshed.expires_at,
-          expiresAt: refreshed.expires_at,
-          projectId: refreshed.projectId,
-        };
-      },
+      login: runUnifiedLogin,
+      refreshToken: runUnifiedRefresh,
       getApiKey(credentials: unknown): string {
         if (!credentials || typeof credentials !== "object") return "";
-        const creds = extractCredentials(credentials as Record<string, unknown>);
-        if (!creds.token) return "";
-
-        // OMP's YJi requires JSON string: { token, projectId, refreshToken, expiresAt, email }
-        return JSON.stringify({
-          token: creds.token,
-          projectId: creds.projectId,
-          refreshToken: creds.refreshToken,
-          expiresAt: creds.expiresAt,
-          email: creds.email,
-        });
+        return formatStructuredApiKey(credentials as Record<string, unknown>);
       },
     },
   });
@@ -254,7 +335,9 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
         if (subcmd === "login") {
           notify("Starting Antigravity OAuth browser sign-in...");
           try {
-            const creds = await loginWithBrowser((msg) => notify(`  [OAuth] ${msg}`));
+            const creds = await loginWithBrowser({
+              onProgress: (msg) => notify(`  [OAuth] ${msg}`),
+            });
             saveAccountToAgentDb(creds);
             notify(`Successfully authenticated as ${maskEmail(creds.email || "User")}! Credential saved to agent.db.`);
           } catch (err) {
@@ -269,12 +352,28 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           return;
         }
 
+        if (subcmd === "update" || subcmd === "upgrade") {
+          notify("Checking GitHub Releases for pi-antigravity-stealth updates...");
+          const result = await maybeAutoUpdate({ force: true });
+          const level =
+            result.status === "failed" ? "error" : result.status === "unavailable" ? "warning" : "info";
+          notify(formatUpdateResult(result), level);
+          return;
+        }
+
         // Default: status
         const ua = await buildHubUserAgent();
+        const oauthMode = hasCustomOAuthClient() ? "Custom OAuth Client (env)" : "OMP Built-in OAuth";
+        const install = detectInstall();
+        const pending = pendingUpdate(undefined, install.version);
         const lines = [
           `=== Google Antigravity Stealth Plugin (Pi & OMP) ===`,
-          `Provider: google-antigravity (active override)`,
-          `Endpoint: ${ANTIGRAVITY_ENDPOINT_DAILY}`,
+          `Plugin Version: v${install.version} (${install.kind})`,
+          ...(pending ? [`Update Notice: ${pending}`] : []),
+          `Provider: google-antigravity (built-in + stealth unpause)`,
+          `Endpoint: ${baseUrlOverride || "OMP auto [daily-cloudcode-pa, sandbox]"}`,
+          `OAuth Mode: ${oauthMode}`,
+          `Usage Patch: Argon bucket isolated from Gemini (google) counter`,
           `Simulated User-Agent: ${ua}`,
           `Simulated Client: Antigravity Hub v${version} (CL ${changelist})`,
           `Saved Accounts in agent.db: ${activeCount} active (${storedAccounts.length} total)`,
@@ -287,11 +386,30 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           `  /agy restore              - Re-activate all soft-deleted accounts`,
           `  /agy login                - Authenticate a new Google account`,
           `  /agy manifest             - Refresh Google Hub release version`,
+          `  /agy update               - Check GitHub Releases and auto-update`,
         ];
         notify(lines.join("\n"));
       },
     });
   }
+
+  // Background non-blocking GitHub Release update check on interactive session start
+  pi.on?.("session_start", (_event, ctx) => {
+    if (!ctx?.hasUI) return;
+    if (process.env.PI_ANTIGRAVITY_SKIP_UPDATE_CHECK) return;
+    if (process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test") return;
+    void maybeAutoUpdate()
+      .then((result) => {
+        if (result.status !== "updated" && result.status !== "failed") return;
+        const level = result.status === "updated" ? "info" : "warning";
+        if (ctx.ui) {
+          ctx.ui.notify(formatUpdateResult(result), level);
+        } else {
+          pi.logger.info(formatUpdateResult(result));
+        }
+      })
+      .catch(() => {});
+  });
 
   pi.logger.info(
     `pi-antigravity-stealth active (Hub v${version}, cl=${changelist}, ${activeCount} stored accounts loaded)`
