@@ -45,7 +45,8 @@
     "test": "bun test ./tests/plugin.test.ts",
     "typecheck": "tsc --noEmit",
     "patch": "bun run scripts/patch-omp.ts",
-    "link": "omp plugin link ."
+    "link": "omp plugin link .",
+    "check:drift": "bun run scripts/check-upstream-drift.ts"
   },
   "devDependencies": {
     "@oh-my-pi/pi-ai": "^18.18.6",

@@ -12,6 +12,7 @@ bun.lock
 *.bak
 *.tmp
 *.log
+drift-report.md
 
 # OS metadata
 .DS_Store

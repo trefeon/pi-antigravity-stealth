@@ -1,0 +1,49 @@
+name: Antigravity Upstream Drift Watcher
+
+on:
+  schedule:
+    # Run daily at 06:00 UTC
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run Upstream Drift Probe
+        id: drift_check
+        run: bun run scripts/check-upstream-drift.ts
+        env:
+          GITHUB_ACTIONS: "true"
+
+      - name: Notify Maintainer via Issue
+        if: env.DRIFT_DETECTED == 'true'
+        run: |
+          # Check if an open issue with label upstream-drift already exists
+          EXISTING=$(gh issue list --label "upstream-drift" --state open --json number --jq '.[0].number')
+          if [ -z "$EXISTING" ]; then
+            gh issue create \
+              --title "🚨 Upstream Antigravity Drift Detected" \
+              --body-file drift-report.md \
+              --label "upstream-drift"
+          else
+            echo "An open drift alert issue already exists (#$EXISTING). Appending update..."
+            gh issue comment "$EXISTING" --body-file drift-report.md
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
