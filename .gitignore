@@ -1,0 +1,18 @@
+# References and research fixtures
+reference/
+
+# Node / Bun
+node_modules/
+bun.lockb
+bun.lock
+
+# Environment and local configs
+.env
+*.local
+*.bak
+*.tmp
+*.log
+
+# OS metadata
+.DS_Store
+Thumbs.db

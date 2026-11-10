@@ -1,0 +1,56 @@
+{
+  "name": "pi-antigravity-stealth",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "index.ts",
+  "description": "Stealth Google Antigravity provider unpause with official Hub wire signatures and saved credential recovery for Pi & OMP",
+  "license": "MIT",
+  "author": "trefeon",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/trefeon/omp-antigravity.git"
+  },
+  "homepage": "https://github.com/trefeon/omp-antigravity#readme",
+  "bugs": {
+    "url": "https://github.com/trefeon/omp-antigravity/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "omp-plugin",
+    "antigravity",
+    "google-antigravity",
+    "stealth",
+    "anti-ban",
+    "gemini",
+    "claude",
+    "cloud-code-assist"
+  ],
+  "files": [
+    "index.ts",
+    "src",
+    "scripts"
+  ],
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "scripts": {
+    "test": "bun test ./tests/plugin.test.ts",
+    "typecheck": "tsc --noEmit",
+    "patch": "bun run scripts/patch-omp.ts",
+    "link": "omp plugin link ."
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-ai": "^18.18.6",
+    "@oh-my-pi/pi-coding-agent": "^18.18.6",
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
+  }
+}
