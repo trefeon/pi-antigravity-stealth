@@ -1,6 +1,6 @@
 {
   "name": "pi-antigravity-stealth",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "type": "module",
   "main": "index.ts",
   "description": "Stealth Google Antigravity provider unpause with official Hub wire signatures and saved credential recovery for Pi & OMP",
