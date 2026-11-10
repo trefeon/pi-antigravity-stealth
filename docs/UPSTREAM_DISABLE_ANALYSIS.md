@@ -86,3 +86,22 @@ The pause is enforced at three distinct interception points:
 | Add manual models to `models.yml` | A custom `models.yml` entry without a custom `baseUrl` delegates to the built-in provider, which triggers `assertProviderEnabled` and aborts. |
 | Set `GOOGLE_APPLICATION_CREDENTIALS` or API keys | Antigravity uses Cloud Code Assist OAuth tokens with specific Google OAuth scopes and hooks, not standard Gemini API keys. |
 | Re-running `omp login google-antigravity` | The login CLI checks `providerPauseReason` and outright refuses the flow. |
+
+---
+
+## 4. The Turnkey Solution: `pi-antigravity-stealth`
+
+By registering an OAuth provider under `google-antigravity` via OMP's extension API, `customOAuthProviders.has("google-antigravity")` evaluates to `true`.
+
+As designed by upstream:
+```typescript
+export function providerPauseReason(provider: string): string | undefined {
+    return customOAuthProviders.has(provider) ? undefined : providerDisabledReason(provider);
+}
+```
+
+This immediately:
+1. Unlocks `providerPauseReason`, allowing OMP's session pool to load stored accounts from `agent.db`.
+2. Re-enables model discovery for all 13 built-in Antigravity models.
+3. Bypasses the login block without patching binary bundles.
+4. Packages as a standard plugin: `omp plugin install pi-antigravity-stealth`.

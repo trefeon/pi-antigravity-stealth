@@ -6,13 +6,13 @@ To maintain and safely use Google Antigravity on OMP, four distinct architectura
 
 ## Comparison Matrix
 
-| Dimension | Strategy 1: Native Extension | Strategy 2: Binary/Zstd Patcher | Strategy 3: Upstream Fork | Strategy 4: Standalone Proxy |
+| Dimension | Strategy 1: Plugin (pi-antigravity-stealth) | Strategy 2: Binary/Zstd Patcher | Strategy 3: Upstream Fork | Strategy 4: Standalone Proxy |
 |---|---|---|---|---|
 | **Maintenance** | Low (Zero edits to node_modules) | Very Low (1-command post-update) | High (Syncing upstream commits) | Medium (Independent process) |
-| **Update Survival** | Survives OMP updates | Must re-run after `omp update` | Requires custom build/install | Survives OMP updates |
-| **ToS Evasion / Stealth** | None (Default OMP headers) | None (Default OMP headers) | High (Custom headers/UA/Client IDs) | High (Arbitrary header control) |
-| **Complexity** | 1 TS file in `~/.omp/agent/extensions/` | 1 Bun script | Full monorepo fork | Standalone Go/TS daemon |
-
+| **Update Survival** | Survives all OMP/Pi updates | Must re-run after `omp update` | Requires custom build/install | Survives all updates |
+| **ToS Evasion / Stealth** | High (1:1 Hub spoofing, sanitized headers, custom IDs) | None (Default OMP headers) | High (Custom headers/UA/Client IDs) | High (Arbitrary header control) |
+| **Complexity** | Turnkey (`omp plugin install`) | 1 Bun script | Full monorepo fork | Standalone Go/TS daemon |
+| **Credential Recovery** | Automatic (`agent.db` scan & `/agy restore`) | Manual SQLite edits | Manual | Requires config file import |
 ---
 
 ## Detailed Breakdown
@@ -38,9 +38,9 @@ This causes `providerPauseReason` to return `undefined`, immediately:
 2. Unblocking model discovery.
 3. Preventing `assertProviderEnabled` from throwing `ProviderDisabledError`.
 
-#### Tradeoff:
-* Pros: Completely survives `omp update` because user extensions in `~/.omp/agent/extensions/` are not overwritten during binary upgrades.
-* Cons: Uses OMP's default request headers and OAuth client IDs, meaning Google's backend detection signals remain unchanged.
+#### Implementation: `pi-antigravity-stealth` (Published on npm)
+* **Pros**: Survives all `omp update` cycles, zero edits to `node_modules`. Implements 1:1 Hub client spoofing, dynamic manifest synchronization, and automatic recovery of existing saved credentials in `agent.db`. Supports custom OAuth client ID/secret isolation.
+* **Cons**: None. Available directly via `omp plugin install pi-antigravity-stealth`.
 
 ---
 
