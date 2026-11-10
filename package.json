@@ -8,11 +8,11 @@
   "author": "trefeon",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/trefeon/omp-antigravity.git"
+    "url": "git+https://github.com/trefeon/pi-antigravity-stealth.git"
   },
-  "homepage": "https://github.com/trefeon/omp-antigravity#readme",
+  "homepage": "https://github.com/trefeon/pi-antigravity-stealth#readme",
   "bugs": {
-    "url": "https://github.com/trefeon/omp-antigravity/issues"
+    "url": "https://github.com/trefeon/pi-antigravity-stealth/issues"
   },
   "keywords": [
     "pi-package",
