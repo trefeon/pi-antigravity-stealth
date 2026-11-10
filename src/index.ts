@@ -8,17 +8,72 @@
 
 import { ANTIGRAVITY_ENDPOINT_DAILY } from "./constants";
 import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest";
-import { loginWithBrowser, refreshAccessToken, type AntigravityCredentials } from "./auth";
+import { loginWithBrowser, refreshAccessToken } from "./auth";
 import { listStoredAccounts, maskEmail, restoreAllStoredAccounts } from "./accounts";
+
+interface ExtensionCommandContext {
+  ui?: {
+    notify(message: string, level?: "info" | "warning" | "error"): void;
+  };
+  hasUI?: boolean;
+}
 
 interface ExtensionAPI {
   registerProvider(id: string, options: Record<string, unknown>): void;
-  registerCommand?(name: string, handler: (args: string, ctx: unknown) => Promise<void> | void): void;
+  registerCommand?(
+    name: string,
+    options: {
+      description?: string;
+      handler: (args: string, ctx?: ExtensionCommandContext) => Promise<void> | void;
+    }
+  ): void;
   logger: {
     info(msg: string, ...args: unknown[]): void;
     warn(msg: string, ...args: unknown[]): void;
     error(msg: string, ...args: unknown[]): void;
   };
+}
+
+function extractCredentials(c: Record<string, unknown>) {
+  const token =
+    typeof c.access === "string"
+      ? c.access
+      : typeof c.token === "string"
+      ? c.token
+      : typeof c.access_token === "string"
+      ? c.access_token
+      : typeof c.accessToken === "string"
+      ? c.accessToken
+      : "";
+
+  const projectId =
+    typeof c.projectId === "string" && c.projectId.length > 0
+      ? c.projectId
+      : typeof c.project_id === "string" && c.project_id.length > 0
+      ? c.project_id
+      : "aicode-consumers";
+
+  const refreshToken =
+    typeof c.refresh === "string"
+      ? c.refresh
+      : typeof c.refresh_token === "string"
+      ? c.refresh_token
+      : typeof c.refreshToken === "string"
+      ? c.refreshToken
+      : undefined;
+
+  const expiresAt =
+    typeof c.expires === "number"
+      ? c.expires
+      : typeof c.expires_at === "number"
+      ? c.expires_at
+      : typeof c.expiresAt === "number"
+      ? c.expiresAt
+      : undefined;
+
+  const email = typeof c.email === "string" ? c.email : undefined;
+
+  return { token, projectId, refreshToken, expiresAt, email };
 }
 
 export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void> {
@@ -42,103 +97,141 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
     oauth: {
       name: "Google Antigravity (Stealth Plugin)",
       async login(callbacks: { onProgress?: (msg: string) => void }) {
-        return await loginWithBrowser(callbacks.onProgress);
+        const creds = await loginWithBrowser(callbacks.onProgress);
+        return {
+          access: creds.access_token,
+          accessToken: creds.access_token,
+          refresh: creds.refresh_token,
+          refreshToken: creds.refresh_token,
+          expires: creds.expires_at,
+          expiresAt: creds.expires_at,
+          projectId: creds.projectId,
+          email: creds.email,
+        };
       },
       async refreshToken(credentials: unknown) {
         if (!credentials || typeof credentials !== "object") {
           throw new Error("Invalid Antigravity credentials object");
         }
-        const creds = credentials as AntigravityCredentials;
-        if (!creds.refresh_token) {
+        const c = credentials as Record<string, unknown>;
+        const extracted = extractCredentials(c);
+        if (!extracted.refreshToken) {
           return credentials;
         }
-        return await refreshAccessToken(creds.refresh_token, creds.projectId);
+
+        const refreshed = await refreshAccessToken(extracted.refreshToken, extracted.projectId);
+        return {
+          ...c,
+          access: refreshed.access_token,
+          accessToken: refreshed.access_token,
+          refresh: refreshed.refresh_token,
+          refreshToken: refreshed.refresh_token,
+          expires: refreshed.expires_at,
+          expiresAt: refreshed.expires_at,
+          projectId: refreshed.projectId,
+        };
       },
       getApiKey(credentials: unknown): string {
         if (!credentials || typeof credentials !== "object") return "";
-        if ("access_token" in credentials && typeof credentials.access_token === "string") {
-          return credentials.access_token;
-        }
-        if ("access" in credentials && typeof credentials.access === "string") {
-          return credentials.access;
-        }
-        return "";
+        const creds = extractCredentials(credentials as Record<string, unknown>);
+        if (!creds.token) return "";
+
+        // OMP's YJi requires JSON string: { token, projectId, refreshToken, expiresAt, email }
+        return JSON.stringify({
+          token: creds.token,
+          projectId: creds.projectId,
+          refreshToken: creds.refreshToken,
+          expiresAt: creds.expiresAt,
+          email: creds.email,
+        });
       },
     },
   });
 
   // Slash commands for status, accounts, recovery, and login
   if (typeof pi.registerCommand === "function") {
-    pi.registerCommand("agy", async (args: string) => {
-      const parts = args.trim().split(/\s+/);
-      const subcmd = parts[0]?.toLowerCase() || "status";
+    pi.registerCommand("agy", {
+      description: "Manage Google Antigravity stealth status and accounts",
+      handler: async (args: string, ctx?: ExtensionCommandContext) => {
+        function notify(msg: string, level: "info" | "warning" | "error" = "info") {
+          if (ctx?.hasUI && ctx.ui) {
+            ctx.ui.notify(msg, level);
+          } else {
+            console.log(msg);
+          }
+        }
 
-      if (subcmd === "accounts") {
-        const accounts = listStoredAccounts();
-        if (accounts.length === 0) {
-          console.log("No saved Antigravity accounts found in agent.db.");
-          console.log("Use '/agy login' to sign in with Google.");
+        const parts = args.trim().split(/\s+/);
+        const subcmd = parts[0]?.toLowerCase() || "status";
+
+        if (subcmd === "accounts") {
+          const accounts = listStoredAccounts();
+          if (accounts.length === 0) {
+            notify("No saved Antigravity accounts found in agent.db.\nUse '/agy login' to sign in with Google.");
+            return;
+          }
+          const lines = [`Saved Antigravity Accounts (${accounts.length}):`];
+          for (const a of accounts) {
+            const status = a.disabledCause
+              ? `[Disabled: ${a.disabledCause}]`
+              : a.isExpired
+              ? "[Token Expired - refreshable]"
+              : "[Active]";
+            lines.push(`  • ${maskEmail(a.email || "Unknown")} (Project: ${a.projectId || "default"}) ${status}`);
+          }
+          notify(lines.join("\n"));
           return;
         }
-        console.log(`Saved Antigravity Accounts (${accounts.length}):`);
-        for (const a of accounts) {
-          const status = a.disabledCause
-            ? `[Disabled: ${a.disabledCause}]`
-            : a.isExpired
-            ? "[Token Expired - refreshable]"
-            : "[Active]";
-          console.log(
-            `  • ${maskEmail(a.email || "Unknown")} (Project: ${a.projectId || "default"}) ${status}`
-          );
+
+        if (subcmd === "restore") {
+          const result = restoreAllStoredAccounts();
+          const lines = [
+            `Restored ${result.restored} previously disabled accounts out of ${result.total} total accounts.`,
+          ];
+          for (const email of result.accounts) {
+            lines.push(`  ✓ ${email}`);
+          }
+          lines.push("All saved Antigravity credentials are now active in OMP / Pi.");
+          notify(lines.join("\n"));
+          return;
         }
-        return;
-      }
 
-      if (subcmd === "restore") {
-        const result = restoreAllStoredAccounts();
-        console.log(
-          `Restored ${result.restored} previously disabled accounts out of ${result.total} total accounts.`
-        );
-        for (const email of result.accounts) {
-          console.log(`  ✓ ${email}`);
+        if (subcmd === "login") {
+          notify("Starting Antigravity OAuth browser sign-in...");
+          try {
+            const creds = await loginWithBrowser((msg) => notify(`  [OAuth] ${msg}`));
+            notify(`Successfully authenticated as ${maskEmail(creds.email || "User")}!`);
+          } catch (err) {
+            notify(`Login failed: ${err instanceof Error ? err.message : String(err)}`, "error");
+          }
+          return;
         }
-        console.log("All saved Antigravity credentials are now active in OMP / Pi.");
-        return;
-      }
 
-      if (subcmd === "login") {
-        console.log("Starting Antigravity OAuth browser sign-in...");
-        try {
-          const creds = await loginWithBrowser((msg) => console.log(`  [OAuth] ${msg}`));
-          console.log(`Successfully authenticated as ${maskEmail(creds.email || "User")}!`);
-        } catch (err) {
-          console.error("Login failed:", err instanceof Error ? err.message : String(err));
+        if (subcmd === "manifest" || subcmd === "refresh") {
+          const refreshed = await getLiveHubVersion(5000);
+          notify(`Antigravity Manifest Refreshed: v${refreshed.version} (cl=${refreshed.changelist})`);
+          return;
         }
-        return;
-      }
 
-      if (subcmd === "manifest" || subcmd === "refresh") {
-        const refreshed = await getLiveHubVersion(5000);
-        console.log(
-          `Antigravity Manifest Refreshed: v${refreshed.version} (cl=${refreshed.changelist})`
-        );
-        return;
-      }
-
-      // Default: status
-      const ua = await buildHubUserAgent();
-      console.log(`=== Google Antigravity Stealth Plugin (Pi & OMP) ===`);
-      console.log(`Provider: google-antigravity (active override)`);
-      console.log(`Endpoint: ${ANTIGRAVITY_ENDPOINT_DAILY}`);
-      console.log(`Simulated User-Agent: ${ua}`);
-      console.log(`Simulated Client: Antigravity Hub v${version} (CL ${changelist})`);
-      console.log(`Saved Accounts in agent.db: ${activeCount} active (${storedAccounts.length} total)`);
-      console.log(`\nSubcommands:`);
-      console.log(`  /agy status     - Show connection and stealth status (default)`);
-      console.log(`  /agy accounts   - List saved Antigravity accounts in agent.db`);
-      console.log(`  /agy restore    - Re-activate all saved accounts`);
-      console.log(`  /agy login      - Authenticate a new Google account`);
-      console.log(`  /agy manifest   - Refresh Google Hub release version`);
+        // Default: status
+        const ua = await buildHubUserAgent();
+        const lines = [
+          `=== Google Antigravity Stealth Plugin (Pi & OMP) ===`,
+          `Provider: google-antigravity (active override)`,
+          `Endpoint: ${ANTIGRAVITY_ENDPOINT_DAILY}`,
+          `Simulated User-Agent: ${ua}`,
+          `Simulated Client: Antigravity Hub v${version} (CL ${changelist})`,
+          `Saved Accounts in agent.db: ${activeCount} active (${storedAccounts.length} total)`,
+          ``,
+          `Subcommands:`,
+          `  /agy status     - Show connection and stealth status (default)`,
+          `  /agy accounts   - List saved Antigravity accounts in agent.db`,
+          `  /agy restore    - Re-activate all saved accounts`,
+          `  /agy login      - Authenticate a new Google account`,
+          `  /agy manifest   - Refresh Google Hub release version`,
+        ];
+        notify(lines.join("\n"));
+      },
     });
   }
 
