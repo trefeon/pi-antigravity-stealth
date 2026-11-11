@@ -1,7 +1,7 @@
 # Reverse Engineering & Wire Protocol: Legitimate Google Antigravity Signatures
 
 This document details the exact wire protocol, request structure, client headers, and telemetry behavior reverse-engineered from:
-1. **Official Google Antigravity CLI (`agy`) v1.5.4** (stripped Go ELF/PE binaries).
+1. **Official Google Antigravity CLI (`agy`) v1.5.5** (stripped Go ELF/PE binaries).
 2. **Official Google Antigravity VS Code Extension (`google.google-antigravity`) v1.11.0**.
 3. **Reference Open-Source Implementations** (`cortexkit/antigravity-auth`, `NoeFabris/opencode-antigravity-auth`, `shekohex/opencode-google-antigravity-auth`).
 
@@ -216,8 +216,8 @@ Known verified versions & changelists:
 | `2.23.0` | `998057262` | ❌ Deprecated |
 | `2.24.0` | `1000335682` | ⚠️ Transitioning |
 | `2.26.0` | `1005016104` | ✅ Active Baseline |
-| `2.30.0` | `6386428939206656` | ✅ Latest Production |
-
+| `2.30.0` | `6386428939206656` | ✅ Active Baseline |
+| `2.31.0` | `6379060755038208` | ✅ Latest Production |
 ---
 
 ## 6. OMP Configuration & Environment Levers
@@ -226,8 +226,8 @@ Oh My Pi (`@oh-my-pi/pi-coding-agent`) already possesses native hooks for these 
 
 | Environment Variable | Default | Recommended Stealth Setting | Purpose |
 |---|---|---|---|
-| `PI_AI_ANTIGRAVITY_VERSION` | `"2.26.0"` | `"2.30.0"` or manifest-resolved | Hub version |
-| `PI_AI_ANTIGRAVITY_CL` | `"1005016104"` | `"6386428939206656"` | Internal Google Changelist |
+| `PI_AI_ANTIGRAVITY_VERSION` | `"2.26.0"` | `"2.31.0"` or manifest-resolved | Hub version |
+| `PI_AI_ANTIGRAVITY_CL` | `"1005016104"` | `"6379060755038208"` | Internal Google Changelist |
 | `PI_AI_ANTIGRAVITY_OS` | `process.platform` | `"windows"` (or native host) | Reported OS type |
 | `PI_AI_ANTIGRAVITY_ARCH` | `process.arch` | `"amd64"` | Reported architecture |
 | `ANTIGRAVITY_CLIENT_ID` | Default public | *Custom GCP OAuth Client ID* | Isolates account from shared bans |

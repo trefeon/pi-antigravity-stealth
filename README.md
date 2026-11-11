@@ -5,25 +5,24 @@
 [![CI](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/ci.yml/badge.svg)](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/ci.yml)
 [![Upstream Watcher](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/upstream-watch.yml/badge.svg)](https://github.com/trefeon/pi-antigravity-stealth/actions/workflows/upstream-watch.yml)
 
-> Native Oh My Pi (OMP) and Pi Coding Agent extension providing stealth unpause for Google Antigravity, 1:1 Hub client spoofing, and automatic saved credential recovery.
+> Native Oh My Pi (OMP) and Pi Coding Agent extension providing stealth Google Antigravity Hub header spoofing, Argon quota isolation, automatic OMP upgrade patching, and saved credential recovery.
 
 ---
 
 ## What is pi-antigravity-stealth?
 
-In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622), commit `8895c0fa328`), upstream maintainers paused the built-in `google-antigravity` provider in response to Google issuing account restrictions on third-party clients with unverified signatures.
+In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622), commit `8895c0fa328`), upstream maintainers paused the built-in `google-antigravity` provider; in **v18.18.7** (`e3fde96`), upstream replaced the hard pause with a `login-warning` prompt while still leaving `gemini-argon-*` merged into the `google` quota counter and keeping a `2.26.0` / `cl=1005016104` fallback.
 
 `pi-antigravity-stealth` is a standalone, update-safe extension plugin for **Oh My Pi (OMP)** (with `/agy` management commands, bundled skill, and updater also working cleanly on **Pi Coding Agent**):
 
-1. **Unpauses & Delegates to Built-in Antigravity**: Uses OMP's built-in `registerProvider` escape hatch (`customOAuthProviders`) while delegating OAuth, token refresh, endpoint auto-failover, and wire transport to OMP's already-shipped `google-antigravity` implementation.
-2. **Argon Quota Counter Isolation**: Overrides usage parsing (`src/usage.ts`) so exhausted Gemini 4 Argon weekly buckets (`gemini-argon-*`) stay in their own `argon` counter instead of blocking healthy Gemini (`google`) quota across Pro accounts.
-3. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.30.0`, CL `6386428939206656`) and keeps `PI_AI_ANTIGRAVITY_*` aligned with official Hub signatures.
+1. **Unpauses & Delegates to Built-in Antigravity**: Uses OMP's built-in `registerProvider` escape hatch (`customOAuthProviders`) on paused versions (`18.18.4`–`18.18.6`) and delegates OAuth, token refresh, endpoint auto-failover, and wire transport to OMP's shipped `google-antigravity` implementation.
+2. **Argon Quota Counter Isolation & Auto-Patching**: Overrides runtime usage parsing (`src/usage.ts`) so exhausted Gemini 4 Argon weekly buckets (`gemini-argon-*`) stay in their own `argon` counter instead of blocking healthy Gemini (`google`) quota across Pro accounts, and automatically re-applies `cli.js` / `rules.json-*.zst` patches (`src/omp-patch.ts`) whenever `omp update` replaces OMP's bundle.
+3. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.31.0`, CL `6379060755038208`) and keeps `PI_AI_ANTIGRAVITY_*` aligned with official Hub signatures.
 4. **Automatic Credential Recovery**: Discovers existing saved OAuth accounts from `agent.db` (`~/.omp/agent/agent.db` and `~/.pi/agent/agent.db`) and restores them via `/agy restore`.
-5. **Custom Client ID Support**: Allows isolating your Google account with private OAuth client credentials (`ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET`), falling back cleanly to OMP's shipped client config when unset.
+5. **Custom Client ID Support**: Allows isolating your Google account with private OAuth client credentials (`ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET` via environment, `.env`, or `~/.omp/antigravity.env`), falling back cleanly to OMP's shipped client config when unset.
 6. **GitHub Release Auto-Updater**: Checks GitHub Releases on interactive session start (every 6 hours, zero API quota) and upgrades script/git installs in place without npm; `/agy update` checks and upgrades immediately.
-7. **Interactive Command Snippets & Quota Diagnostics**: Registers `/agy` argument completions (`getArgumentCompletions`) with per-subcommand descriptions and account ID suggestions, plus `/agy usage`, `/agy doctor`, headless `--paste` OAuth login, and a bundled agent skill (`skills/antigravity-stealth`).
-8. **Continuous Upstream Automation**: Scheduled GitHub Actions monitor Google Hub manifests, CLI binaries, and upstream OMP KDL rules daily.
-
+7. **Interactive Command Snippets & Quota Diagnostics**: Registers `/agy` argument completions (`getArgumentCompletions`) with per-subcommand descriptions and account ID suggestions, plus `/agy usage`, `/agy patch`, `/agy doctor`, headless `--paste` OAuth login, and a bundled agent skill (`skills/antigravity-stealth`).
+8. **Continuous Upstream Automation**: Scheduled GitHub Actions monitor Google Hub manifests, CLI binaries, upstream OMP KDL rules, and `@oh-my-pi/pi-coding-agent` npm releases daily, auto-syncing baselines, verifying tests/patch regexes, and cutting verified patch releases when safe.
 > **Host Compatibility Note:** On **OMP** (`@oh-my-pi/pi-coding-agent`), all 13 built-in `google-antigravity` models and streaming transport are unlocked out of the box. On **Pi Coding Agent** (`pi`), the extension, `/agy` commands, bundled skill, and updater load cleanly on Node `>=22.5`, while Antigravity model inference still requires OMP (since `@earendil-works/pi-ai` does not ship Cloud Code Assist wire transport natively).
 
 ---
@@ -194,8 +193,9 @@ Type `/agy ` inside OMP or Pi to open interactive subcommand snippets and accoun
 | `/agy remove <email\|id>` | Deactivates an account (`disabled_cause = 'deleted by user'`; use `--hard` for permanent deletion) |
 | `/agy restore` | Clears disabled flags on existing accounts and re-activates them in the session pool |
 | `/agy manifest` | Forces an immediate refresh check against Google's live update manifest |
-| `/agy doctor` | Prints sanitized host runtime, `omp-builtin`, `agent.db`, Hub UA, and updater diagnostics |
-| `/agy update` | Checks GitHub Releases and updates script/git installs in place |
+| `/agy patch` | Re-applies Argon quota isolation & capacity meter patches to local OMP install |
+| `/agy doctor` | Prints sanitized host runtime, `omp-builtin`, `omp-patch`, `agent.db`, Hub UA, and updater diagnostics |
+| `/agy update` | Checks GitHub Releases, updates script/git installs in place, and verifies OMP patches |
 
 ---
 
@@ -212,7 +212,7 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 Accept: text/event-stream
 Accept-Encoding: gzip
-User-Agent: antigravity/hub/2.30.0 (aidev_client; os_type=windows; arch=amd64; cl=6386428939206656)
+User-Agent: antigravity/hub/2.31.0 (aidev_client; os_type=windows; arch=amd64; cl=6379060755038208)
 ```
 
 **Anti-Ban Rules Enforced:**
@@ -231,8 +231,9 @@ pi-antigravity-stealth/
 ├── package.json                        # Plugin manifest (dual "omp" and "pi" bindings)
 ├── index.ts                            # Root extension export
 ├── src/
-│   ├── index.ts                        # Extension factory, built-in delegation, updater & /agy commands
+│   ├── index.ts                        # Extension factory, built-in delegation, auto-patch, updater & /agy commands
 │   ├── omp-builtin.ts                  # Runtime resolver for OMP's built-in OAuth/usage/rules
+│   ├── omp-patch.ts                    # Race-safe, stat-cached OMP bundle patcher (survives omp update)
 │   ├── usage.ts                        # UsageProvider wrapper isolating Argon from google counter
 │   ├── updater.ts                      # GitHub Release auto-updater (no npm required)
 │   ├── auth.ts                         # PKCE OAuth flow, token refresh, and project discovery

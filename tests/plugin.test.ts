@@ -9,11 +9,20 @@ import { buildHubUserAgent, getLiveHubVersion } from "../src/manifest.ts";
 import {
   getEffectiveClientId,
   getEffectiveClientSecret,
+  loadAntigravityEnvFiles,
   parseOAuthCallbackInput,
   resolveBrowserLaunch,
   resolveOAuthClientCredentials,
 } from "../src/auth.ts";
 import { findOmpAgentDistDir } from "../src/omp-builtin.ts";
+import {
+  applyOmpPatch,
+  checkCliCompatibility,
+  ensureOmpPatched,
+  inspectOmpPatchStatus,
+  revertOmpPatch,
+} from "../src/omp-patch.ts";
+import { applyUpstreamSync } from "../scripts/check-upstream-drift.ts";
 import { DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET, FALLBACK_PROJECT_ID } from "../src/constants.ts";
 import { type AntigravityUsageProvider, sanitizeAntigravityUsageReport } from "../src/usage.ts";
 import {
@@ -274,6 +283,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       },
     });
     expect(messages[0]).toContain("pi-antigravity-stealth Doctor");
+    expect(messages[0]).toContain("OMP Patch Status:");
     expect(messages[0]).toContain("Host Runtime:");
   });
 
@@ -478,6 +488,168 @@ describe("pi-antigravity-stealth Plugin", () => {
         JSON.stringify({ name: "@oh-my-pi/pi-coding-agent" })
       );
       expect(findOmpAgentDistDir([piScope, ompScope])).toBe(path.join(ompScope, "pi-coding-agent", "dist"));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("loads unset Antigravity env vars from env files without overwriting explicit env or reading unrelated keys", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-env-"));
+    const origId = process.env.ANTIGRAVITY_CLIENT_ID;
+    const origSecret = process.env.ANTIGRAVITY_CLIENT_SECRET;
+    const origVer = process.env.PI_AI_ANTIGRAVITY_VERSION;
+    const origOther = process.env.UNRELATED_KEY;
+    try {
+      delete process.env.ANTIGRAVITY_CLIENT_ID;
+      process.env.ANTIGRAVITY_CLIENT_SECRET = "already-set-secret";
+      delete process.env.PI_AI_ANTIGRAVITY_VERSION;
+      delete process.env.UNRELATED_KEY;
+
+      const envPath = path.join(tmp, "antigravity.env");
+      fs.writeFileSync(
+        envPath,
+        [
+          "# comment",
+          'export ANTIGRAVITY_CLIENT_ID="file-client-id.apps.googleusercontent.com"',
+          "ANTIGRAVITY_CLIENT_SECRET=file-secret-ignored",
+          "PI_AI_ANTIGRAVITY_VERSION=2.31.0 # inline comment",
+          "UNRELATED_KEY=should-not-load",
+        ].join("\n")
+      );
+
+      const count = loadAntigravityEnvFiles([envPath]);
+      expect(count).toBe(2);
+      expect(Reflect.get(process.env, "ANTIGRAVITY_CLIENT_ID")).toBe("file-client-id.apps.googleusercontent.com");
+      expect(Reflect.get(process.env, "ANTIGRAVITY_CLIENT_SECRET")).toBe("already-set-secret");
+      expect(Reflect.get(process.env, "PI_AI_ANTIGRAVITY_VERSION")).toBe("2.31.0");
+      expect(Reflect.get(process.env, "UNRELATED_KEY")).toBeUndefined();
+    } finally {
+      if (origId !== undefined) process.env.ANTIGRAVITY_CLIENT_ID = origId;
+      else delete process.env.ANTIGRAVITY_CLIENT_ID;
+      if (origSecret !== undefined) process.env.ANTIGRAVITY_CLIENT_SECRET = origSecret;
+      else delete process.env.ANTIGRAVITY_CLIENT_SECRET;
+      if (origVer !== undefined) process.env.PI_AI_ANTIGRAVITY_VERSION = origVer;
+      else delete process.env.PI_AI_ANTIGRAVITY_VERSION;
+      if (origOther !== undefined) process.env.UNRELATED_KEY = origOther;
+      else delete process.env.UNRELATED_KEY;
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("auto-patches OMP bundles, survives simulated upgrades, and honors revert", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-patch-"));
+    try {
+      const pkgDir = path.join(tmp, "pi-coding-agent");
+      const distDir = path.join(pkgDir, "dist");
+      const statePath = path.join(tmp, "patch-state.json");
+      fs.mkdirSync(distDir, { recursive: true });
+
+      const writeFakeOmp = (version: string, zstName: string) => {
+        fs.writeFileSync(path.join(pkgDir, "package.json"), JSON.stringify({ name: "@oh-my-pi/pi-coding-agent", version }));
+        const rules = {
+          auth: { providers: [{ id: "google-antigravity", loginWarning: "warn" }] },
+          behavior: {
+            quotaTiers: [
+              {
+                provider: "google-antigravity",
+                tiers: [{ label: "google", models: ["gemini-3-pro"] }],
+                fallbacks: [{ label: "google", substring: "gemini-" }],
+              },
+            ],
+          },
+        };
+        fs.writeFileSync(path.join(distDir, zstName), Bun.zstdCompressSync(Buffer.from(JSON.stringify(rules))));
+        const fakeCli = [
+          "function f1(g,b){let id=b.bucketId?.toLowerCase()??\"\",gn=g?.displayName?.toLowerCase()??\"\";if(id.startsWith(\"gemini-\")||gn.includes(\"gemini\"))return[\"google\"];return[\"other\"];}",
+          "function resolveOAuth(p,a){let passes=[{allowBlocked:!1,enforcePlanRequirement:r,enforceAccounts:e}];if(e)passes.push({allowBlocked:!1,enforcePlanRequirement:r,enforceAccounts:!1});if(passes.push({allowBlocked:!0,enforcePlanRequirement:r,enforceAccounts:e}),r)passes.push({allowBlocked:!0,enforcePlanRequirement:!1,enforceAccounts:e});if(e)passes.push({allowBlocked:!0,enforcePlanRequirement:!1,enforceAccounts:!1});return passes;}",
+          "function m1(rep,lim){if(rep.provider!==\"anthropic\"&&rep.provider!==\"openai-codex\")return;return\"t\";}",
+        ].join("\n");
+        fs.writeFileSync(path.join(distDir, "cli.js"), fakeCli, "utf8");
+      };
+
+      writeFakeOmp("18.18.8", "rules.json-111.zst");
+      const first = ensureOmpPatched({ distDir, statePath, now: () => 1000 });
+      expect(first.status).toBe("patched");
+      expect(first.changed).toBe(true);
+      expect(checkCliCompatibility(fs.readFileSync(path.join(distDir, "cli.js"), "utf8"))).toEqual({
+        summary: "patched",
+        resolveOAuth: "patched",
+        meter: "patched",
+        compatible: true,
+      });
+
+      // Second check hits stat receipt
+      const cached = ensureOmpPatched({ distDir, statePath, now: () => 2000 });
+      expect(cached.status).toBe("already-patched");
+      expect(cached.changed).toBe(false);
+
+      // Simulate OMP upgrade replacing files
+      fs.unlinkSync(path.join(distDir, "rules.json-111.zst"));
+      writeFakeOmp("18.18.9", "rules.json-222.zst");
+      const upgraded = ensureOmpPatched({ distDir, statePath, now: () => 3000 });
+      expect(upgraded.status).toBe("patched");
+      expect(upgraded.ompVersion).toBe("18.18.9");
+      const verified = inspectOmpPatchStatus({ distDir, statePath, verifyFiles: true });
+      expect(verified.status).toBe("already-patched");
+
+      // Revert restores original unpatched files and suppresses auto-patch until forced
+      const rev = revertOmpPatch({ distDir, statePath, now: () => 4000 });
+      expect(rev.status).toBe("reverted");
+      const afterRevert = ensureOmpPatched({ distDir, statePath, now: () => 5000 });
+      expect(afterRevert.status).toBe("reverted");
+      const reapplied = applyOmpPatch({ distDir, statePath, force: true, now: () => 6000 });
+      expect(reapplied.status).toBe("patched");
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("syncs upstream Hub, CLI, and OMP versions cleanly via applyUpstreamSync", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-sync-"));
+    try {
+      fs.mkdirSync(path.join(tmp, "src"), { recursive: true });
+      fs.mkdirSync(path.join(tmp, "scripts"), { recursive: true });
+      fs.mkdirSync(path.join(tmp, "docs"), { recursive: true });
+
+      fs.writeFileSync(
+        path.join(tmp, "package.json"),
+        JSON.stringify(
+          {
+            name: "pi-antigravity-stealth",
+            version: "1.2.2",
+            devDependencies: { "@oh-my-pi/pi-ai": "^18.18.8", "@oh-my-pi/pi-coding-agent": "^18.18.8" },
+          },
+          null,
+          2
+        )
+      );
+      fs.writeFileSync(
+        path.join(tmp, "src", "constants.ts"),
+        'export const FALLBACK_VERSION = "2.31.0";\nexport const FALLBACK_CL = "6379060755038208";\nexport const CLI_BASELINE_VERSION = "1.5.5";\n'
+      );
+      fs.writeFileSync(
+        path.join(tmp, "scripts", "antigravity-unpause-extension.ts"),
+        'process.env.PI_AI_ANTIGRAVITY_VERSION ??= "2.31.0";\nprocess.env.PI_AI_ANTIGRAVITY_CL ??= "6379060755038208";\n'
+      );
+      fs.writeFileSync(
+        path.join(tmp, "README.md"),
+        "manifest (`2.31.0`, CL `6379060755038208`)\nUser-Agent: antigravity/hub/2.31.0 (aidev_client; os_type=windows; arch=amd64; cl=6379060755038208)\n"
+      );
+
+      const outcome = applyUpstreamSync(tmp, {
+        hubVersion: "2.32.0",
+        hubCL: "7777777777777777",
+        cliVersion: "1.5.6",
+        ompVersion: "18.18.9",
+        bumpPatch: true,
+      });
+
+      expect(outcome.needsRelease).toBe(true);
+      expect(outcome.newVersion).toBe("1.2.3");
+      expect(outcome.changedFiles).toContain("src/constants.ts");
+      expect(outcome.changedFiles).toContain("package.json");
+      expect(fs.readFileSync(path.join(tmp, "src", "constants.ts"), "utf8")).toContain('FALLBACK_VERSION = "2.32.0"');
+      expect(fs.readFileSync(path.join(tmp, "README.md"), "utf8")).toContain("antigravity/hub/2.32.0");
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

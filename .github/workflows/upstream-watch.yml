@@ -5,17 +5,26 @@ on:
     # Run daily at 06:00 UTC
     - cron: '0 6 * * *'
   workflow_dispatch:
+    inputs:
+      auto_release:
+        description: 'Automatically commit, tag, and publish a GitHub Release when synced baselines pass all gates'
+        required: false
+        default: true
+        type: boolean
 
 permissions:
-  contents: read
+  contents: write
   issues: write
 
 jobs:
-  check-drift:
+  check-and-sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -25,20 +34,99 @@ jobs:
       - name: Install dependencies
         run: bun install
 
-      - name: Run Upstream Drift Probe
-        id: drift_check
-        run: bun run scripts/check-upstream-drift.ts
+      - name: Probe upstream drift and apply baseline sync
+        run: |
+          if [ "${{ github.event_name != 'workflow_dispatch' || inputs.auto_release != false }}" = "true" ]; then
+            bun run scripts/check-upstream-drift.ts --apply --bump --write-report
+          else
+            bun run scripts/check-upstream-drift.ts --apply --write-report
+          fi
         env:
           GITHUB_ACTIONS: "true"
 
-      - name: Notify Maintainer via Issue
-        if: env.DRIFT_DETECTED == 'true'
+      - name: Refresh lockfile and verify synced build
+        id: verify_sync
+        if: env.SYNC_APPLIED == 'true'
+        continue-on-error: true
         run: |
-          # Check if an open issue with label upstream-drift already exists
+          bun install
+          bun run typecheck
+          bun test ./tests/plugin.test.ts
+          bash -n scripts/install.sh scripts/agy-omp.sh
+          bun run scripts/check-upstream-drift.ts --verify-patch
+
+      - name: Remove temporary drift-report.md before commit
+        if: env.SYNC_APPLIED == 'true' && steps.verify_sync.outcome == 'success'
+        run: |
+          if [ -f drift-report.md ]; then
+            cp drift-report.md /tmp/drift-report.md
+            rm -f drift-report.md
+          fi
+
+      - name: Commit synced baselines and release tag
+        if: env.SYNC_APPLIED == 'true' && steps.verify_sync.outcome == 'success' && env.MANUAL_REVIEW_REQUIRED != 'true' && (github.event_name != 'workflow_dispatch' || inputs.auto_release != false)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          rm -f drift-report.md
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No tracked changes to commit."
+            echo "RELEASE_READY=false" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "${SYNC_BUMPED:-false}" = "true" ] && [ -n "${NEW_VERSION:-}" ]; then
+            TAG="v${NEW_VERSION}"
+            git commit -m "chore(sync): align upstream baselines for ${TAG}"
+            git tag "${TAG}"
+            git push origin HEAD:main --follow-tags
+            echo "RELEASE_TAG=${TAG}" >> "$GITHUB_ENV"
+            echo "RELEASE_READY=true" >> "$GITHUB_ENV"
+          else
+            git commit -m "docs(sync): align upstream Antigravity baselines"
+            git push origin HEAD:main
+            echo "RELEASE_READY=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build release archives
+        if: env.RELEASE_READY == 'true'
+        run: |
+          TAG="${RELEASE_TAG}"
+          PKG_DIR="pi-antigravity-stealth-${TAG}"
+          mkdir -p "dist/${PKG_DIR}"
+          cp index.ts package.json README.md LICENSE tsconfig.json "dist/${PKG_DIR}/"
+          cp -r src scripts docs skills "dist/${PKG_DIR}/"
+          tar -C dist -czf "dist/pi-antigravity-stealth-${TAG}.tar.gz" "${PKG_DIR}"
+          (cd dist && zip -qr "pi-antigravity-stealth-${TAG}.zip" "${PKG_DIR}")
+          (cd dist && sha256sum "pi-antigravity-stealth-${TAG}.tar.gz" "pi-antigravity-stealth-${TAG}.zip" > SHA256SUMS.txt)
+
+      - name: Publish GitHub Release
+        if: env.RELEASE_READY == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          body_path: /tmp/drift-report.md
+          files: |
+            dist/pi-antigravity-stealth-${{ env.RELEASE_TAG }}.tar.gz
+            dist/pi-antigravity-stealth-${{ env.RELEASE_TAG }}.zip
+            dist/SHA256SUMS.txt
+
+      - name: Notify maintainer via Issue when manual review or verification failure occurs
+        if: (env.DRIFT_DETECTED == 'true' && (env.MANUAL_REVIEW_REQUIRED == 'true' || env.SYNC_APPLIED != 'true' || steps.verify_sync.outcome == 'failure'))
+        run: |
+          gh label create "upstream-drift" --color "d93f0b" --description "Automated upstream Antigravity/OMP drift alerts" --force
+          if [ ! -f drift-report.md ] && [ -f /tmp/drift-report.md ]; then
+            cp /tmp/drift-report.md drift-report.md
+          fi
+          if [ "${{ steps.verify_sync.outcome }}" = "failure" ]; then
+            printf "\n⚠️ **Automated verification failed after sync; manual intervention required.**\n" >> drift-report.md
+          fi
           EXISTING=$(gh issue list --label "upstream-drift" --state open --json number --jq '.[0].number')
           if [ -z "$EXISTING" ]; then
             gh issue create \
-              --title "🚨 Upstream Antigravity Drift Detected" \
+              --title "🚨 Upstream Antigravity Drift Requires Attention" \
               --body-file drift-report.md \
               --label "upstream-drift"
           else

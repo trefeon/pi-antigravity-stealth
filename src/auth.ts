@@ -6,6 +6,8 @@
  * ANTIGRAVITY_CLIENT_ID / ANTIGRAVITY_CLIENT_SECRET env vars are explicitly configured.
  */
 
+import * as fs from "fs";
+import * as path from "path";
 import * as http from "http";
 import * as crypto from "crypto";
 import { execFile } from "child_process";
@@ -100,6 +102,55 @@ export function resolveOAuthClientCredentials(): { clientId: string; clientSecre
     return builtin;
   }
   return { clientId: customId, clientSecret: customSecret };
+}
+
+const ALLOWED_ENV_FILE_KEY = /^(ANTIGRAVITY_[A-Z0-9_]+|PI_(?:AI_)?ANTIGRAVITY_[A-Z0-9_]+)$/;
+
+/**
+ * Populates unset Antigravity env vars from `.env` and `~/.omp/antigravity.env`.
+ * Explicit process environment variables always take precedence.
+ */
+export function loadAntigravityEnvFiles(pathsOverride?: string[]): number {
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const files =
+    pathsOverride ?? [
+      path.resolve(process.cwd(), ".env"),
+      ...(home ? [path.join(home, ".omp", "antigravity.env")] : []),
+    ];
+
+  let loaded = 0;
+  for (const filePath of files) {
+    if (!filePath || !fs.existsSync(filePath)) continue;
+    try {
+      const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+      for (const rawLine of lines) {
+        const trimmed = rawLine.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const line = trimmed.startsWith("export ") ? trimmed.slice(7).trim() : trimmed;
+        const eqIdx = line.indexOf("=");
+        if (eqIdx <= 0) continue;
+        const key = line.slice(0, eqIdx).trim();
+        if (!ALLOWED_ENV_FILE_KEY.test(key)) continue;
+        let val = line.slice(eqIdx + 1).trim();
+        if (
+          (val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
+          (val.startsWith("'") && val.endsWith("'") && val.length >= 2)
+        ) {
+          val = val.slice(1, -1);
+        } else {
+          const commentIdx = val.indexOf(" #");
+          if (commentIdx >= 0) {
+            val = val.slice(0, commentIdx).trim();
+          }
+        }
+        if (val && !process.env[key]) {
+          process.env[key] = val;
+          loaded++;
+        }
+      }
+    } catch {}
+  }
+  return loaded;
 }
 
 export async function loginWithBrowser(

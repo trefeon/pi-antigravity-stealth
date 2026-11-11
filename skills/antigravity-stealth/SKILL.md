@@ -17,7 +17,8 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
 - `/agy login [--paste]` — Authenticate a Google account via browser PKCE or paste the callback URL on headless SSH hosts.
 - `/agy remove <email|id> [--hard]` / `/agy restore` — Soft-disable, delete, or re-activate accounts in `agent.db`.
 - `/agy manifest` — Refresh live Google Hub version and changelist.
-- `/agy update` — Check GitHub Releases (no npm, zero API quota) and self-update script/git installs in place.
+- `/agy patch` — Re-apply Argon quota isolation and capacity meter patches to the local OMP install.
+- `/agy update` — Check GitHub Releases (no npm, zero API quota), self-update script/git installs in place, and verify OMP patches.
 
 ## Common Issues & Fixes
 
@@ -27,7 +28,7 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
    - Compiled single-file `omp` binaries do not expose `@oh-my-pi/pi-ai` on disk. Set `ANTIGRAVITY_CLIENT_ID` and `ANTIGRAVITY_CLIENT_SECRET` (or place them in `~/.omp/antigravity.env`) before running `/agy login`.
 3. **Argon Exhaustion Blocking Other Gemini Models:**
    - The plugin separates `gemini-argon-*` buckets into the `argon` counter at runtime so `gemini-4-argon` depletion never blocks `gemini-3.8-flash` or `gemini-3.1-pro`.
-   - For Bun global OMP installs, `bun run patch` (`scripts/patch-omp.ts`) also isolates Argon in `cli.js` and keeps strict `accountAccess` enabled for Pro-only models (e.g. `claude-sonnet-5-5`).
+   - On Bun global OMP installs, the plugin auto-patches `cli.js` and `rules.json-*.zst` via `src/omp-patch.ts` after `omp update` (or manually via `/agy patch` / `bun run patch`) to isolate Argon in `quotaTiers`, split `omp usage` capacity meters, and keep strict `accountAccess` enabled for Pro-only models (e.g. `claude-sonnet-5-5`). Set `PI_ANTIGRAVITY_SKIP_AUTO_PATCH=1` to opt out.
 4. **Updater Control:**
    - Set `PI_ANTIGRAVITY_SKIP_UPDATE_CHECK=1` to disable automatic 6-hour GitHub Release checks.
    - Developer checkouts containing `.git` are never overwritten automatically.

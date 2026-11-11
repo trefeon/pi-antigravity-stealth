@@ -1,8 +1,8 @@
 /**
  * scripts/antigravity-unpause-extension.ts
  *
- * Native Oh My Pi extension that un-pauses Google Antigravity WITHOUT patching node_modules.
- * Also seeds verified stealth version and changelist into the environment.
+ * Standalone Oh My Pi extension that un-pauses Google Antigravity on OMP 18.18.4–18.18.6
+ * without patching node_modules, and primes verified Hub version/changelist on all OMP versions.
  *
  * How it works:
  * Upstream OMP defines:
@@ -21,8 +21,8 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function antigravityUnpauseExtension(pi: ExtensionAPI): void {
   // Ensure verified stealth Antigravity Hub version and internal changelist are active
-  process.env.PI_AI_ANTIGRAVITY_VERSION ??= "2.30.0";
-  process.env.PI_AI_ANTIGRAVITY_CL ??= "6386428939206656";
+  process.env.PI_AI_ANTIGRAVITY_VERSION ??= "2.31.0";
+  process.env.PI_AI_ANTIGRAVITY_CL ??= "6379060755038208";
   if (process.platform === "win32") {
     process.env.PI_AI_ANTIGRAVITY_OS ??= "windows";
   }

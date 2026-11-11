@@ -6,7 +6,7 @@ In early November 2026, Google initiated an automated enforcement sweep on Cloud
 * **Issue [#18341](https://github.com/can1357/oh-my-pi/issues/18341)**: Users reported receiving `403 PERMISSION_DENIED: This service has been disabled in this account for violation of Terms of Service. Error ID: ...`
 * **Issue [#18499](https://github.com/can1357/oh-my-pi/issues/18499)**: Multiple users requested disabling Antigravity login out-of-the-box so new users wouldn't unintentionally burn their primary Google accounts.
 * **PR [#18622](https://github.com/can1357/oh-my-pi/pull/18622)**: Authored by maintainer `H4vC`, reviewed by `roboomp`, merged into OMP `v18.18.4` (commit `8895c0fa328`).
-
+* **OMP `v18.18.7` (`e3fde96`)**: Upstream later replaced the hard `disabled` flag with a `login-warning` risk prompt in `google-antigravity.kdl`; `pi-antigravity-stealth` continues to provide live Hub UA/CL alignment, private OAuth client ID support, runtime Argon quota isolation, and automatic `cli.js`/`rules.json` patching across upgrades.
 ---
 
 ## 2. Technical Mechanics of the Hard-Pause

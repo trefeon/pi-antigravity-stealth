@@ -10,12 +10,24 @@
 
 import { FALLBACK_PROJECT_ID } from "./constants.ts";
 import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest.ts";
-import { hasCustomOAuthClient, loginWithBrowser, refreshAccessToken, resolveOAuthClientCredentials } from "./auth.ts";
+import {
+  hasCustomOAuthClient,
+  loadAntigravityEnvFiles,
+  loginWithBrowser,
+  refreshAccessToken,
+  resolveOAuthClientCredentials,
+} from "./auth.ts";
 import {
   findOmpAgentDistDir,
   findPiAiPackageDir,
   getBuiltinAntigravityDefinition,
 } from "./omp-builtin.ts";
+import {
+  applyOmpPatch,
+  ensureOmpPatched,
+  inspectOmpPatchStatus,
+  isRunningUnderTests,
+} from "./omp-patch.ts";
 import { createAntigravityUsageProvider } from "./usage.ts";
 import {
   findAgentDbPaths,
@@ -58,7 +70,8 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommandDef[] = [
   { name: "remove", usage: "<email|id> [--hard]", takesArgs: true, description: "Deactivate or hard-delete an account" },
   { name: "restore", description: "Re-activate all soft-deleted accounts in agent.db" },
   { name: "manifest", description: "Refresh live Google Hub version and changelist" },
-  { name: "doctor", description: "Show sanitized host, OAuth, and updater diagnostics" },
+  { name: "patch", description: "Apply Argon quota & capacity patches to local OMP install" },
+  { name: "doctor", description: "Show sanitized host, OAuth, patch, and updater diagnostics" },
   { name: "update", description: "Check GitHub Releases and auto-update in place" },
 ];
 
@@ -336,6 +349,10 @@ async function runUnifiedRefresh(credentials: unknown, signal?: AbortSignal): Pr
 }
 
 export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void> {
+  if (!isRunningUnderTests()) {
+    loadAntigravityEnvFiles();
+  }
+  const patchResult = ensureOmpPatched();
   const { version, changelist } = await getLiveHubVersion();
   const { os, arch } = resolvePlatform();
 
@@ -344,7 +361,6 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
   process.env.PI_AI_ANTIGRAVITY_CL ??= changelist;
   process.env.PI_AI_ANTIGRAVITY_OS ??= os;
   process.env.PI_AI_ANTIGRAVITY_ARCH ??= arch;
-
   // Inventory saved accounts in agent.db
   const storedAccounts = listStoredAccounts();
   const activeCount = storedAccounts.filter((a) => a.disabledCause === null).length;
@@ -373,7 +389,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
   if (typeof pi.registerCommand === "function") {
     pi.registerCommand("agy", {
       description:
-        "Antigravity: status | accounts | usage | tier | login | remove | restore | manifest | doctor | update",
+        "Antigravity: status | accounts | usage | tier | login | remove | restore | manifest | patch | doctor | update",
       getArgumentCompletions: (prefix: string) => getAgyArgumentCompletions(prefix),
       handler: async (args: string, ctx?: ExtensionCommandContext) => {
         function notify(msg: string, level: "info" | "warning" | "error" = "info") {
@@ -617,6 +633,19 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           return;
         }
 
+        if (subcmd === "patch") {
+          const res = applyOmpPatch({ force: true });
+          const level = res.status === "failed" ? "error" : res.status === "unavailable" || res.status === "locked" ? "warning" : "info";
+          const header =
+            res.status === "patched"
+              ? `Applied Argon/quota patches to OMP v${res.ompVersion ?? "unknown"}. Restart OMP to load cli.js updates.`
+              : res.status === "already-patched"
+              ? `OMP v${res.ompVersion ?? "unknown"} is already patched.`
+              : `OMP patch status: ${res.status}`;
+          notify([header, ...res.details.map((d) => `  • ${d}`)].join("\n"), level);
+          return;
+        }
+
         if (subcmd === "doctor") {
           const install = detectInstall();
           const runtime =
@@ -633,6 +662,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           const disabledAcc = accounts.filter((a) => a.disabledCause !== null).length;
           const upd = readUpdateState();
           const ua = await buildHubUserAgent();
+          const patchInfo = inspectOmpPatchStatus({ verifyFiles: true });
 
           const lines = [
             `=== pi-antigravity-stealth Doctor ===`,
@@ -640,6 +670,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
             `Host Runtime: ${runtime} (${process.platform}/${process.arch})`,
             `OMP Built-in Dist: ${distDir ?? "not found (standalone binary or Pi)"}`,
             `OMP Built-in pi-ai: ${piAiDir ?? "not found"}`,
+            `OMP Patch Status: ${patchInfo.status}${patchInfo.ompVersion ? ` (OMP v${patchInfo.ompVersion})` : ""}`,
             `OAuth Client Creds: ${
               hasCustomOAuthClient()
                 ? "Custom env (ANTIGRAVITY_CLIENT_ID/SECRET)"
@@ -665,12 +696,16 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
         if (subcmd === "update" || subcmd === "upgrade") {
           notify("Checking GitHub Releases for pi-antigravity-stealth updates...");
           const result = await maybeAutoUpdate({ force: true });
+          const postPatch = isRunningUnderTests() ? null : ensureOmpPatched();
           const level =
             result.status === "failed" ? "error" : result.status === "unavailable" ? "warning" : "info";
-          notify(formatUpdateResult(result), level);
+          const extra =
+            postPatch && postPatch.status === "patched"
+              ? `\nAuto-patched OMP v${postPatch.ompVersion ?? "unknown"} for Argon quota isolation.`
+              : "";
+          notify(`${formatUpdateResult(result)}${extra}`, level);
           return;
         }
-
         // Default: status
         const ua = await buildHubUserAgent();
         const oauthMode = hasCustomOAuthClient() ? "Custom OAuth Client (env)" : "OMP Built-in OAuth";
@@ -698,11 +733,19 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
     });
   }
 
-  // Background non-blocking GitHub Release update check on interactive session start
+  // Background non-blocking GitHub Release update check & patch notice on interactive session start
   pi.on?.("session_start", (_event, ctx) => {
     if (!ctx?.hasUI) return;
+    if (patchResult.status === "patched") {
+      const msg = `Auto-patched OMP v${patchResult.ompVersion ?? "unknown"} (Argon quota isolation & capacity meters). Restart OMP to load cli.js changes.`;
+      if (ctx.ui) {
+        ctx.ui.notify(msg, "info");
+      } else {
+        pi.logger?.info?.(msg);
+      }
+    }
     if (process.env.PI_ANTIGRAVITY_SKIP_UPDATE_CHECK) return;
-    if (process.env.NODE_ENV === "test" || process.env.BUN_ENV === "test") return;
+    if (isRunningUnderTests()) return;
     void maybeAutoUpdate()
       .then((result) => {
         if (result.status !== "updated" && result.status !== "failed") return;
@@ -717,6 +760,6 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
   });
 
   pi.logger?.info?.(
-    `pi-antigravity-stealth active (Hub v${version}, cl=${changelist}, ${activeCount} stored accounts loaded)`
+    `pi-antigravity-stealth active (Hub v${version}, cl=${changelist}, ${activeCount} stored accounts loaded, omp-patch=${patchResult.status})`
   );
 }

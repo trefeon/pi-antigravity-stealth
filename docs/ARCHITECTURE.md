@@ -73,7 +73,7 @@ CREATE TABLE auth_credentials (
 Configurable via OMP setting `providers.antigravityEndpoint` (`auto` | `production` | `sandbox`).
 
 ### Request Headers & Fingerprinting
-* `User-Agent`: `antigravity/hub/<version> (aidev_client; os_type=<os>; arch=<arch>; cl=<cl>)` (e.g. `antigravity/hub/2.30.0` with `cl=6386428939206656`)
+* `User-Agent`: `antigravity/hub/<version> (aidev_client; os_type=<os>; arch=<arch>; cl=<cl>)` (e.g. `antigravity/hub/2.31.0` with `cl=6379060755038208`)
 * `x-goog-api-client`: Identifies client transport.
 * `Authorization`: `Bearer <access_token>`
 * GCP project header targeting the discovered `projectId`.

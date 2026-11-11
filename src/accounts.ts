@@ -7,7 +7,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { createRequire } from "module";
-import { ANTIGRAVITY_ENDPOINT_DAILY } from "./constants.ts";
+import { ANTIGRAVITY_ENDPOINT_DAILY, FALLBACK_PROJECT_ID } from "./constants.ts";
 import { buildHubUserAgent } from "./manifest.ts";
 
 interface SqliteStatement {
@@ -216,7 +216,7 @@ export function saveAccountToAgentDb(creds: SaveAccountInput): boolean {
     refresh: creds.refresh_token,
     expires: creds.expires_at,
     email: creds.email,
-    projectId: creds.projectId || "aicode-consumers",
+    projectId: creds.projectId || FALLBACK_PROJECT_ID,
     authorizedAt: Date.now(),
   });
 
