@@ -81,6 +81,8 @@ const UPSTREAM_KDL_URL =
   "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/catalog/src/compat/rules/auth/google-antigravity.kdl";
 const UPSTREAM_BEHAVIOR_KDL_URL =
   "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/catalog/src/compat/rules/runtime/behavior.kdl";
+const UPSTREAM_COLLAPSE_KDL_URL =
+  "https://raw.githubusercontent.com/can1357/oh-my-pi/main/packages/catalog/src/compat/rules/taxonomy/_collapse.kdl";
 const NPM_OMP_LATEST_URL = "https://registry.npmjs.org/@oh-my-pi/pi-coding-agent/latest";
 
 function readProp(obj: unknown, key: string): unknown {
@@ -339,9 +341,10 @@ async function runCheck(rootDir = process.cwd()): Promise<DriftReport> {
   let nativeArgonTier = false;
 
   try {
-    const [authRes, behaviorRes] = await Promise.all([
+    const [authRes, behaviorRes, collapseRes] = await Promise.all([
       fetch(UPSTREAM_KDL_URL, { signal: AbortSignal.timeout(8000) }),
       fetch(UPSTREAM_BEHAVIOR_KDL_URL, { signal: AbortSignal.timeout(8000) }),
+      fetch(UPSTREAM_COLLAPSE_KDL_URL, { signal: AbortSignal.timeout(8000) }),
     ]);
     if (authRes.ok) {
       ruleAccessible = true;
@@ -364,11 +367,16 @@ async function runCheck(rootDir = process.cwd()): Promise<DriftReport> {
     if (behaviorRes.ok) {
       const bkdl = await behaviorRes.text();
       const qtMatch = bkdl.match(/quota-tiers\s+provider="google-antigravity"\s*\{[\s\S]*?\}/);
-      if (qtMatch && qtMatch[0].includes('"argon"')) {
+      if (qtMatch && (qtMatch[0].includes('"argon"') || qtMatch[0].includes('"google-argon"'))) {
         nativeArgonTier = true;
+      }
+    }
+    if (collapseRes.ok) {
+      const ckdl = await collapseRes.text();
+      if (!ckdl.includes('"gemini-4-hydrogen"')) {
         hasDrift = true;
         requiresManualReview = true;
-        details.push("Upstream OMP added native 'argon' quota tier in behavior.kdl!");
+        details.push("Upstream OMP does not yet include native 'gemini-4-hydrogen' in _collapse.kdl (patch required).");
       }
     }
   } catch (err) {

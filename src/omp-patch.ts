@@ -40,6 +40,24 @@ interface QuotaTiersRule {
   fallbacks?: QuotaFallbackEntry[];
   [key: string]: unknown;
 }
+interface CompiledVariantFamily {
+  provider: string;
+  id: string;
+  name: string;
+  members: string[];
+  defaultMember?: string;
+  retiredMembers?: string[];
+  routing: Record<string, string>;
+  mode?: string;
+  efforts?: string[];
+  effortBudgets?: Record<string, number>;
+  defaultLevel?: string;
+  requiresEffort?: boolean;
+  suppressWhenOff?: boolean;
+  preserveAbsentEffortRoutes?: boolean;
+  extraAliases?: string[];
+  [key: string]: unknown;
+}
 
 interface RulesCatalogData {
   auth?: {
@@ -50,9 +68,15 @@ interface RulesCatalogData {
     quotaTiers?: QuotaTiersRule[];
     [key: string]: unknown;
   };
+  taxonomy?: {
+    collapse?: {
+      variantFamilies?: CompiledVariantFamily[];
+      [key: string]: unknown;
+    };
+    [key: string]: unknown;
+  };
   [key: string]: unknown;
 }
-
 export interface OmpPatchState {
   version: 1;
   ompVersion: string | null;
@@ -242,7 +266,8 @@ export function findRulesBundleFile(distDir: string): string | null {
 
 export function checkCliCompatibility(cliSrc: string): CliCompatibilityReport {
   const summaryPatched =
-    cliSrc.includes('.startsWith("gemini-argon-")||') && cliSrc.includes('return["argon"]');
+    (cliSrc.includes('.startsWith("gemini-argon-")||') && cliSrc.includes('return["argon"]')) ||
+    cliSrc.includes('.startsWith("gemini-argon-")');
   const summary: CliCompatibilityReport["summary"] = summaryPatched
     ? "patched"
     : SUMMARY_COUNTER_REGEX.test(cliSrc)
@@ -285,7 +310,10 @@ export function patchCliSource(cliSrc: string): { source: string; changed: boole
     out = out.replace(full, replacement);
     details.push("Patched cli.js built-in Antigravity summary parser to isolate Argon quota.");
     changed = true;
-  } else if (out.includes('.startsWith("gemini-argon-")||') && out.includes('return["argon"]')) {
+  } else if (
+    (out.includes('.startsWith("gemini-argon-")||') && out.includes('return["argon"]')) ||
+    out.includes('.startsWith("gemini-argon-")')
+  ) {
     details.push("cli.js built-in Antigravity summary parser already isolates Argon quota.");
   } else {
     details.push("Could not locate Antigravity summary parser in cli.js (plugin usage override still protects runtime).");
@@ -324,7 +352,7 @@ export function patchCliSource(cliSrc: string): { source: string; changed: boole
       `function ${fnName}(${repVar},${limVar}){` +
       `if(${repVar}.provider==="google-antigravity"){` +
       `let _m=${limVar}.id.toLowerCase().split(":")[1];` +
-      `return _m==="google"?"gemini":_m==="argon"?"argon":(_m==="anthropic"||_m==="openai")?"claude/GPT":_m;` +
+      `return _m==="google"?"gemini":_m==="argon"||_m==="google-argon"?"argon":(_m==="anthropic"||_m==="openai")?"claude/GPT":_m;` +
       `}` +
       `if(${repVar}.provider!=="anthropic"&&${repVar}.provider!=="openai-codex")return;`;
     out = out.replace(full, replacement);
@@ -357,32 +385,80 @@ function patchRulesData(
     details.push("Removed legacy disabled auth rule on google-antigravity.");
     changed = true;
   }
+  // 1. Ensure gemini-4-hydrogen variant family exists in taxonomy.collapse.variantFamilies
+  data.taxonomy ??= {};
+  data.taxonomy.collapse ??= {};
+  const collapse = data.taxonomy.collapse as { variantFamilies?: CompiledVariantFamily[]; [key: string]: unknown };
+  collapse.variantFamilies ??= [];
+  const existingHydro = collapse.variantFamilies.find(
+    (f) => f.provider === "google-antigravity" && f.id === "gemini-4-hydrogen"
+  );
+  if (!existingHydro) {
+    const idx = collapse.variantFamilies.findIndex(
+      (f) => f.provider === "google-antigravity" && (f.id === "gemini-4-carbon" || f.id === "gemini-4-argon")
+    );
+    const hydroFamily: CompiledVariantFamily = {
+      provider: "google-antigravity",
+      id: "gemini-4-hydrogen",
+      name: "Gemini 4 Hydrogen",
+      members: [
+        "gemini-4-hydrogen-low",
+        "gemini-4-hydrogen-medium",
+        "gemini-4-hydrogen-high",
+        "gemini-4-hydrogen-xhigh",
+      ],
+      defaultMember: "gemini-4-hydrogen-medium",
+      routing: {
+        minimal: "gemini-4-hydrogen-low",
+        low: "gemini-4-hydrogen-low",
+        medium: "gemini-4-hydrogen-medium",
+        high: "gemini-4-hydrogen-high",
+        xhigh: "gemini-4-hydrogen-xhigh",
+      },
+      mode: "google-level",
+      efforts: ["low", "medium", "high", "xhigh"],
+      requiresEffort: true,
+    };
+    if (idx >= 0) {
+      collapse.variantFamilies.splice(idx + 1, 0, hydroFamily);
+    } else {
+      collapse.variantFamilies.push(hydroFamily);
+    }
+    details.push("Added 'gemini-4-hydrogen' variant family to taxonomy.collapse.variantFamilies.");
+    changed = true;
+  }
 
   const agQuotaRule = data.behavior?.quotaTiers?.find((q) => q.provider === "google-antigravity");
   if (agQuotaRule) {
     agQuotaRule.tiers ??= [];
-    const existingArgon = agQuotaRule.tiers.find((t) => t.label === "argon");
+    const googleTier = agQuotaRule.tiers.find((t) => t.label === "google");
+    if (googleTier && !googleTier.models.includes("gemini-4-hydrogen")) {
+      googleTier.models.push("gemini-4-hydrogen");
+      details.push("Added 'gemini-4-hydrogen' to 'google' quotaTier.");
+      changed = true;
+    }
+    const existingArgon = agQuotaRule.tiers.find((t) => t.label === "google-argon" || t.label === "argon");
     if (!existingArgon) {
-      agQuotaRule.tiers.push({ label: "argon", models: ["gemini-4-argon"] });
-      details.push("Added 'argon' tier (gemini-4-argon) to google-antigravity quotaTiers.");
+      agQuotaRule.tiers.push({ label: "google-argon", models: ["gemini-4-argon"] });
+      details.push("Added 'google-argon' tier (gemini-4-argon) to google-antigravity quotaTiers.");
       changed = true;
     } else if (!existingArgon.models.includes("gemini-4-argon")) {
       existingArgon.models.push("gemini-4-argon");
-      details.push("Added gemini-4-argon to existing 'argon' quotaTier.");
+      details.push(`Added gemini-4-argon to existing '${existingArgon.label}' quotaTier.`);
       changed = true;
     }
 
     agQuotaRule.fallbacks ??= [];
-    const hasArgonFallback = agQuotaRule.fallbacks.some((f) => f.label === "argon");
+    const hasArgonFallback = agQuotaRule.fallbacks.some((f) => f.label === "google-argon" || f.label === "argon");
     if (!hasArgonFallback) {
       const googleIdx = agQuotaRule.fallbacks.findIndex((f) => f.label === "google" && f.substring === "gemini-");
-      const entry: QuotaFallbackEntry = { label: "argon", substring: "argon" };
+      const entry: QuotaFallbackEntry = { label: "google-argon", substring: "gemini-4-argon" };
       if (googleIdx >= 0) {
         agQuotaRule.fallbacks.splice(googleIdx, 0, entry);
       } else {
         agQuotaRule.fallbacks.unshift(entry);
       }
-      details.push("Added 'argon' substring fallback before 'gemini-' in google-antigravity quotaTiers.");
+      details.push("Added 'google-argon' substring fallback before 'gemini-' in google-antigravity quotaTiers.");
       changed = true;
     }
   }
@@ -487,9 +563,17 @@ function isRulesPatched(data: RulesCatalogData): boolean {
   if (!ag || ag.disabled) return false;
   const qt = data.behavior?.quotaTiers?.find((q) => q.provider === "google-antigravity");
   if (!qt) return true;
-  const hasArgonTier = Boolean(qt.tiers?.some((t) => t.label === "argon" && t.models.includes("gemini-4-argon")));
-  const hasArgonFallback = Boolean(qt.fallbacks?.some((f) => f.label === "argon"));
-  return hasArgonTier && hasArgonFallback;
+  const hasArgonTier = Boolean(
+    qt.tiers?.some((t) => (t.label === "google-argon" || t.label === "argon") && t.models.includes("gemini-4-argon"))
+  );
+  const hasArgonFallback = Boolean(
+    qt.fallbacks?.some((f) => f.label === "google-argon" || f.label === "argon")
+  );
+  const collapse = (data.taxonomy as { collapse?: { variantFamilies?: CompiledVariantFamily[] } } | undefined)?.collapse;
+  const hasHydrogenFamily = Boolean(
+    collapse?.variantFamilies?.some((f) => f.provider === "google-antigravity" && f.id === "gemini-4-hydrogen")
+  );
+  return hasArgonTier && hasArgonFallback && hasHydrogenFamily;
 }
 
 export function inspectOmpPatchStatus(

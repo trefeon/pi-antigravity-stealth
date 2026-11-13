@@ -27,7 +27,7 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
 2. **Standalone Binary / Missing Built-in Client Credentials:**
    - Compiled single-file `omp` binaries do not expose `@oh-my-pi/pi-ai` on disk. Set `ANTIGRAVITY_CLIENT_ID` and `ANTIGRAVITY_CLIENT_SECRET` (or place them in `~/.omp/antigravity.env`) before running `/agy login`.
 3. **Argon Exhaustion Blocking Other Gemini Models:**
-   - The plugin separates `gemini-argon-*` buckets into the `argon` counter at runtime so `gemini-4-argon` depletion never blocks `gemini-3.8-flash` or `gemini-3.1-pro`.
+   - The plugin separates `gemini-argon-*` buckets into the `argon` counter at runtime so `gemini-4-argon` depletion never blocks `gemini-3.8-flash`, `gemini-4-hydrogen`, or `gemini-3.1-pro`.
    - On Bun global OMP installs, the plugin auto-patches `cli.js` and `rules.json-*.zst` via `src/omp-patch.ts` after `omp update` (or manually via `/agy patch` / `bun run patch`) to isolate Argon in `quotaTiers`, split `omp usage` capacity meters, and keep strict `accountAccess` enabled for Pro-only models (e.g. `claude-sonnet-5-5`). Set `PI_ANTIGRAVITY_SKIP_AUTO_PATCH=1` to opt out.
 4. **Updater Control:**
    - Set `PI_ANTIGRAVITY_SKIP_UPDATE_CHECK=1` to disable automatic 6-hour GitHub Release checks.

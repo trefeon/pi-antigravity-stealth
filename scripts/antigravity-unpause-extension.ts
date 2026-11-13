@@ -21,8 +21,8 @@ import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 
 export default function antigravityUnpauseExtension(pi: ExtensionAPI): void {
   // Ensure verified stealth Antigravity Hub version and internal changelist are active
-  process.env.PI_AI_ANTIGRAVITY_VERSION ??= "2.31.0";
-  process.env.PI_AI_ANTIGRAVITY_CL ??= "6379060755038208";
+  process.env.PI_AI_ANTIGRAVITY_VERSION ??= "2.31.2";
+  process.env.PI_AI_ANTIGRAVITY_CL ??= "6470801290035200";
   if (process.platform === "win32") {
     process.env.PI_AI_ANTIGRAVITY_OS ??= "windows";
   }

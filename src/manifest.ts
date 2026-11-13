@@ -53,7 +53,10 @@ export async function getLiveHubVersion(timeoutMs = 4000): Promise<VersionInfo> 
         version = vMatch[1];
       }
 
-      const clMatch = text.match(/[0-9]+\.[0-9]+\.[0-9]+-([0-9]+)/);
+      // Pair the changelist with the parsed version: only trust a CL when it is
+      // published adjacent to the exact Hub version in the manifest, otherwise
+      // we risk emitting a UA that advertises a build that never shipped.
+      const clMatch = text.match(new RegExp(`${version.replace(/\./g, "\\.").replace(/-/g, "\\-")}-([0-9]+)`));
       if (clMatch?.[1]) {
         changelist = clMatch[1];
       }

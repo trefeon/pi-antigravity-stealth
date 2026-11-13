@@ -45,6 +45,14 @@ import {
   resetUpdateMemory,
 } from "../src/updater.ts";
 
+function safeRm(target: string): void {
+  try {
+    fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
+  } catch {
+    // Windows file locking / indexer fallback
+  }
+}
+
 describe("pi-antigravity-stealth Plugin", () => {
   it("resolves the current live or fallback Hub version and changelist", async () => {
     const { version, changelist } = await getLiveHubVersion();
@@ -168,12 +176,14 @@ describe("pi-antigravity-stealth Plugin", () => {
     });
 
     const googleLimits = sanitized.limits.filter((l) => l.id.startsWith("google-antigravity:google:"));
-    const argonLimits = sanitized.limits.filter((l) => l.id.startsWith("google-antigravity:argon:"));
+    const argonLimits = sanitized.limits.filter(
+      (l) => l.id.startsWith("google-antigravity:google-argon:") || l.id.startsWith("google-antigravity:argon:")
+    );
 
     expect(googleLimits.length).toBe(2);
     expect(googleLimits.every((l) => (l.amount.remainingFraction ?? 0) > 0.9)).toBe(true);
     expect(argonLimits.length).toBe(1);
-    expect(argonLimits[0]?.id).toBe("google-antigravity:argon:default:gemini-argon-wtu-weekly");
+    expect(argonLimits[0]?.id).toBe("google-antigravity:google-argon:default:gemini-argon-wtu-weekly");
   });
 
   it("registers google-antigravity with usage override and oauth without overriding built-in baseUrl", async () => {
@@ -242,7 +252,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       {
         value: "tier ",
         label: "tier",
-        description: "Probe account tier (Free, Plus, Pro, Ultra)",
+        description: "Probe account tier and Hydrogen entitlement",
         hint: "er [email|id]",
       },
     ]);
@@ -357,7 +367,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       );
       expect(detectInstall(ompGitRoot).kind).toBe("omp-git");
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      safeRm(tmp);
     }
   });
 
@@ -456,7 +466,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       });
       expect(res2.status).toBe("current");
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      safeRm(tmp);
     }
   });
 
@@ -489,7 +499,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       );
       expect(findOmpAgentDistDir([piScope, ompScope])).toBe(path.join(ompScope, "pi-coding-agent", "dist"));
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      safeRm(tmp);
     }
   });
 
@@ -532,7 +542,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       else delete process.env.PI_AI_ANTIGRAVITY_VERSION;
       if (origOther !== undefined) process.env.UNRELATED_KEY = origOther;
       else delete process.env.UNRELATED_KEY;
-      fs.rmSync(tmp, { recursive: true, force: true });
+      safeRm(tmp);
     }
   });
 
@@ -571,6 +581,18 @@ describe("pi-antigravity-stealth Plugin", () => {
       const first = ensureOmpPatched({ distDir, statePath, now: () => 1000 });
       expect(first.status).toBe("patched");
       expect(first.changed).toBe(true);
+      const patchedRules = JSON.parse(Bun.zstdDecompressSync(fs.readFileSync(path.join(distDir, "rules.json-111.zst"))).toString("utf8"));
+      const hydroFamily = patchedRules.taxonomy?.collapse?.variantFamilies?.find(
+        (f: { id: string }) => f.id === "gemini-4-hydrogen"
+      );
+      expect(hydroFamily).toBeDefined();
+      expect(hydroFamily.members).toContain("gemini-4-hydrogen-medium");
+      expect(hydroFamily.members).toContain("gemini-4-hydrogen-xhigh");
+      const agTiers = patchedRules.behavior?.quotaTiers?.find(
+        (q: { provider: string }) => q.provider === "google-antigravity"
+      );
+      const googleTier = agTiers?.tiers?.find((t: { label: string }) => t.label === "google");
+      expect(googleTier?.models).toContain("gemini-4-hydrogen");
       expect(checkCliCompatibility(fs.readFileSync(path.join(distDir, "cli.js"), "utf8"))).toEqual({
         summary: "patched",
         resolveOAuth: "patched",
@@ -600,7 +622,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       const reapplied = applyOmpPatch({ distDir, statePath, force: true, now: () => 6000 });
       expect(reapplied.status).toBe("patched");
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      safeRm(tmp);
     }
   });
 
@@ -651,7 +673,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       expect(fs.readFileSync(path.join(tmp, "src", "constants.ts"), "utf8")).toContain('FALLBACK_VERSION = "2.32.0"');
       expect(fs.readFileSync(path.join(tmp, "README.md"), "utf8")).toContain("antigravity/hub/2.32.0");
     } finally {
-      fs.rmSync(tmp, { recursive: true, force: true });
+      safeRm(tmp);
     }
   });
 });

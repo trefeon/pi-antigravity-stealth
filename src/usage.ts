@@ -10,7 +10,7 @@
  * and blocking healthy Google AI Pro accounts with 60–100% Gemini quota left.
  */
 
-import { ANTIGRAVITY_ENDPOINT_DAILY, ANTIGRAVITY_ENDPOINT_SANDBOX } from "./constants.ts";
+import { ANTIGRAVITY_ENDPOINT_DAILY } from "./constants.ts";
 import { buildHubUserAgent } from "./manifest.ts";
 import { getBuiltinAntigravityUsageProvider } from "./omp-builtin.ts";
 
@@ -113,8 +113,8 @@ export function sanitizeAntigravityUsageReport<T extends UsageReportLike>(report
       return limit;
     }
     const parts = limit.id.split(":");
-    if (parts.length >= 2 && parts[1] !== "argon") {
-      parts[1] = "argon";
+    if (parts.length >= 2 && parts[1] !== "google-argon" && parts[1] !== "argon") {
+      parts[1] = "google-argon";
       changed = true;
       return {
         ...limit,
@@ -217,7 +217,7 @@ function buildFallbackSummaryReport(
 
     let counterKeys: string[];
     if (bid.startsWith("gemini-argon-") || gname.includes("argon")) {
-      counterKeys = ["argon"];
+      counterKeys = ["google-argon"];
     } else if (bid.startsWith("gemini-") || gname.includes("gemini")) {
       counterKeys = ["google"];
     } else if (
@@ -240,7 +240,7 @@ function buildFallbackSummaryReport(
       const label =
         sharedGroup !== undefined
           ? "Claude & GPT (shared)"
-          : ck === "argon"
+          : ck === "google-argon" || ck === "argon"
           ? "Gemini (Argon)"
           : ck === "google"
           ? "Gemini"
@@ -301,7 +301,7 @@ async function fetchSummaryFallback(
   if (expiresAt !== undefined && expiresAt <= Date.now()) return null;
 
   const baseUrl = typeof params.baseUrl === "string" ? params.baseUrl.replace(/\/+$/, "") : "";
-  const endpoints = baseUrl ? [baseUrl] : [ANTIGRAVITY_ENDPOINT_DAILY, ANTIGRAVITY_ENDPOINT_SANDBOX];
+  const endpoints = baseUrl ? [baseUrl] : [ANTIGRAVITY_ENDPOINT_DAILY];
   const fetchImpl = (typeof ctx.fetch === "function" ? ctx.fetch : fetch) as typeof fetch;
   const ua = await buildHubUserAgent();
 

@@ -34,6 +34,7 @@ import {
   listStoredAccounts,
   maskEmail,
   probeAccountTier,
+  probeHydrogenEntitlement,
   removeStoredAccount,
   restoreAllStoredAccounts,
   saveAccountToAgentDb,
@@ -65,7 +66,7 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommandDef[] = [
   { name: "status", description: "Show plugin, Hub manifest, and account pool status" },
   { name: "accounts", description: "List saved Antigravity accounts in agent.db" },
   { name: "usage", usage: "[email|id]", takesArgs: true, description: "Show live 5h/weekly quota % per pool" },
-  { name: "tier", usage: "[email|id]", takesArgs: true, description: "Probe account tier (Free, Plus, Pro, Ultra)" },
+  { name: "tier", usage: "[email|id]", takesArgs: true, description: "Probe account tier and Hydrogen entitlement" },
   { name: "login", usage: "[--paste]", description: "Authenticate a Google account (--paste for headless SSH)" },
   { name: "remove", usage: "<email|id> [--hard]", takesArgs: true, description: "Deactivate or hard-delete an account" },
   { name: "restore", description: "Re-activate all soft-deleted accounts in agent.db" },
@@ -561,8 +562,15 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
             }
             if (!accessToken) continue;
             const tier = await probeAccountTier(accessToken);
+            const hydrogen = await probeHydrogenEntitlement(accessToken, a.projectId);
             const badge = tier.isPaid ? `[${tier.tierName}] 🌟` : `[${tier.tierName}]`;
-            lines.push(`  • #${a.id} ${maskEmail(a.email || "Unknown")}: ${badge}`);
+            const hydrogenBadge =
+              hydrogen.status === "enabled"
+                ? "Hydrogen: ✅ enabled"
+                : hydrogen.status === "disabled"
+                ? `Hydrogen: ⛔ disabled${hydrogen.note ? ` (${hydrogen.note})` : ""}`
+                : `Hydrogen: ❔ unknown${hydrogen.note ? ` (${hydrogen.note})` : ""}`;
+            lines.push(`  • #${a.id} ${maskEmail(a.email || "Unknown")}: ${badge} · ${hydrogenBadge}`);
             if (tier.upgradeText) {
               lines.push(`      Note: ${tier.upgradeText}`);
             }

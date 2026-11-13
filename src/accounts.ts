@@ -425,3 +425,50 @@ export async function probeAccountTier(accessToken: string): Promise<AccountTier
     };
   }
 }
+export interface HydrogenEntitlementInfo {
+  status: "enabled" | "disabled" | "unknown";
+  note?: string;
+}
+
+/**
+ * Probes whether the account can use gemini-4-hydrogen (paid Pro/Ultra entitlement)
+ * via fetchAvailableModels on the daily host.
+ */
+export async function probeHydrogenEntitlement(
+  accessToken: string,
+  projectId?: string
+): Promise<HydrogenEntitlementInfo> {
+  const userAgent = await buildHubUserAgent();
+  const project = projectId && projectId.length > 0 ? projectId : FALLBACK_PROJECT_ID;
+  try {
+    const res = await fetch(`${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal:fetchAvailableModels`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": userAgent,
+      },
+      body: JSON.stringify({ project }),
+    });
+    if (!res.ok) {
+      return { status: "unknown", note: `HTTP ${res.status}` };
+    }
+    const data = (await res.json()) as {
+      models?: Record<string, { disabled?: boolean; tagDescription?: string }>;
+    };
+    const models = data.models ?? {};
+    const enabledVariant = ["medium", "low", "high", "xhigh"].find(
+      (suffix) => models[`gemini-4-hydrogen-${suffix}`] && models[`gemini-4-hydrogen-${suffix}`].disabled !== true
+    );
+    if (enabledVariant) {
+      return { status: "enabled" };
+    }
+    const disabledEntry = models["gemini-4-hydrogen-disabled"];
+    if (disabledEntry) {
+      return { status: "disabled", note: disabledEntry.tagDescription ?? "Pro/Ultra subscription required" };
+    }
+    return { status: "unknown", note: "gemini-4-hydrogen not listed for this account" };
+  } catch {
+    return { status: "unknown", note: "Unreachable" };
+  }
+}

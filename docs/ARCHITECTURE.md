@@ -73,7 +73,7 @@ CREATE TABLE auth_credentials (
 Configurable via OMP setting `providers.antigravityEndpoint` (`auto` | `production` | `sandbox`).
 
 ### Request Headers & Fingerprinting
-* `User-Agent`: `antigravity/hub/<version> (aidev_client; os_type=<os>; arch=<arch>; cl=<cl>)` (e.g. `antigravity/hub/2.31.0` with `cl=6379060755038208`)
+* `User-Agent`: `antigravity/hub/<version> (aidev_client; os_type=<os>; arch=<arch>; cl=<cl>)` (e.g. `antigravity/hub/2.31.2` with `cl=6470801290035200`)
 * `x-goog-api-client`: Identifies client transport.
 * `Authorization`: `Bearer <access_token>`
 * GCP project header targeting the discovered `projectId`.
@@ -95,6 +95,7 @@ Antigravity exposes specialized wire SKUs (e.g. `-low`, `-medium`, `-high`, `-ti
 |---|---|---|
 | `gemini-3.8-flash` | minimal / low / medium / high | `gemini-3.8-flash-low`, `medium`, `high`, `tiered` |
 | `gemini-4-argon` | low / medium / high | `gemini-4-argon-low`, `medium`, `high` |
+| `gemini-4-hydrogen` | low / medium / high / xhigh | `gemini-4-hydrogen-low`, `medium`, `high`, `xhigh` |
 | `claude-sonnet-5-5` | low / medium / high | `claude-sonnet-5-5-low`, `medium`, `high` |
 | `claude-opus-4-6` | budget (minimal to high) | `claude-opus-4-6-thinking`, `claude-opus-4-6` |
 | `gpt-oss-120b` | budget | `gpt-oss-120b-medium` |

@@ -17,7 +17,7 @@ In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622)
 
 1. **Unpauses & Delegates to Built-in Antigravity**: Uses OMP's built-in `registerProvider` escape hatch (`customOAuthProviders`) on paused versions (`18.18.4`–`18.18.6`) and delegates OAuth, token refresh, endpoint auto-failover, and wire transport to OMP's shipped `google-antigravity` implementation.
 2. **Argon Quota Counter Isolation & Auto-Patching**: Overrides runtime usage parsing (`src/usage.ts`) so exhausted Gemini 4 Argon weekly buckets (`gemini-argon-*`) stay in their own `argon` counter instead of blocking healthy Gemini (`google`) quota across Pro accounts, and automatically re-applies `cli.js` / `rules.json-*.zst` patches (`src/omp-patch.ts`) whenever `omp update` replaces OMP's bundle.
-3. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.31.0`, CL `6379060755038208`) and keeps `PI_AI_ANTIGRAVITY_*` aligned with official Hub signatures.
+3. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.31.2`, CL `6470801290035200`) and keeps `PI_AI_ANTIGRAVITY_*` aligned with official Hub signatures.
 4. **Automatic Credential Recovery**: Discovers existing saved OAuth accounts from `agent.db` (`~/.omp/agent/agent.db` and `~/.pi/agent/agent.db`) and restores them via `/agy restore`.
 5. **Custom Client ID Support**: Allows isolating your Google account with private OAuth client credentials (`ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET` via environment, `.env`, or `~/.omp/antigravity.env`), falling back cleanly to OMP's shipped client config when unset.
 6. **GitHub Release Auto-Updater**: Checks GitHub Releases on interactive session start (every 6 hours, zero API quota) and upgrades script/git installs in place without npm; `/agy update` checks and upgrades immediately.
@@ -157,8 +157,7 @@ Script-installed copies (`~/.pi-antigravity-stealth`) check `github.com/trefeon/
 
 ---
 
-## Available Models (13 Active Models)
-
+## Available Models (14 Active Models)
 Once installed, all built-in Antigravity models are accessible:
 
 | Model ID | Context Window | Max Output | Thinking Support | Multimodal (Images) |
@@ -168,6 +167,7 @@ Once installed, all built-in Antigravity models are accessible:
 | `google-antigravity/claude-sonnet-5-5` | 1,000,000 | 128,000 | low, medium, high | Yes |
 | `google-antigravity/claude-sonnet-4-6` | 250,000 | 64,000 | minimal, low, medium, high | Yes |
 | `google-antigravity/gemini-4-argon` | 1,000,000 | 65,536 | low, medium, high | Yes |
+| `google-antigravity/gemini-4-hydrogen` | 1,000,000 | 262,144 | low, medium, high, xhigh | Yes |
 | `google-antigravity/gemini-3.8-flash` | 1,000,000 | 65,536 | minimal, low, medium, high | Yes |
 | `google-antigravity/gemini-3.5-flash-lite` | 1,000,000 | 65,536 | minimal, low, medium, high | Yes |
 | `google-antigravity/gemini-3.1-flash-lite` | 1,000,000 | 65,536 | minimal, low, medium, high | Yes |
@@ -188,7 +188,7 @@ Type `/agy ` inside OMP or Pi to open interactive subcommand snippets and accoun
 | `/agy status` | Shows plugin version, install kind, endpoint, live Hub version/CL, and active account count |
 | `/agy accounts` | Lists all saved Antigravity accounts in `agent.db` with IDs and masked emails |
 | `/agy usage [email\|id]` | Shows live quota % remaining and reset countdowns grouped by Gemini, Argon, and Claude+GPT |
-| `/agy tier [email\|id]` | Probes live Google subscription tier (**Free**, **Google AI Plus**, **Google AI Pro**, **Google AI Ultra**) |
+| `/agy tier [email\|id]` | Probes live Google subscription tier (**Free**, **Google AI Plus**, **Google AI Pro**, **Google AI Ultra**) plus per-account `gemini-4-hydrogen` entitlement (Pro/Ultra only) |
 | `/agy login [--paste]` | Starts PKCE OAuth login (pass `--paste` on headless SSH servers to paste the callback URL) |
 | `/agy remove <email\|id>` | Deactivates an account (`disabled_cause = 'deleted by user'`; use `--hard` for permanent deletion) |
 | `/agy restore` | Clears disabled flags on existing accounts and re-activates them in the session pool |
@@ -212,7 +212,7 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 Accept: text/event-stream
 Accept-Encoding: gzip
-User-Agent: antigravity/hub/2.31.0 (aidev_client; os_type=windows; arch=amd64; cl=6379060755038208)
+User-Agent: antigravity/hub/2.31.2 (aidev_client; os_type=windows; arch=amd64; cl=6470801290035200)
 ```
 
 **Anti-Ban Rules Enforced:**

@@ -494,7 +494,7 @@ async function upgradeScriptInstall(
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "Expand-Archive -LiteralPath $env:PI_AG_ARCHIVE -DestinationPath $env:PI_AG_STAGE -Force",
+            "Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory($env:PI_AG_ARCHIVE, $env:PI_AG_STAGE)",
           ],
           workDir,
           { PI_AG_ARCHIVE: archivePath, PI_AG_STAGE: stageDir }
