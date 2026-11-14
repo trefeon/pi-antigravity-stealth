@@ -43,6 +43,7 @@ import {
   extractAgyOAuthCandidates,
   pairAgyOAuthClient,
   readAgyClientCache,
+  resolveAgyOAuthPair,
   writeAgyClientCache,
 } from "../src/agy-client.ts";
 import { isUsingAgyClientOAuth, resolveOAuthClientCredentials, resolveRedirectUri } from "../src/auth.ts";
@@ -963,6 +964,49 @@ describe("pi-antigravity-stealth Plugin", () => {
       expect(cached?.clientId).toBe(idA);
       expect(cached?.clientSecret).toBe(secA);
       expect(cached?.source).toBe("agy-binary");
+    } finally {
+      safeRm(tmp);
+    }
+  });
+
+  it("auto-follows the agy binary: unchanged identity hits the cache, a changed binary re-extracts", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-follow-"));
+    try {
+      const makeBlob = (suffix: string) => {
+        const idA = `${"884354919052".slice(0, 12)}-${"agyfirstparty".repeat(2).slice(0, 24)}.apps.googleusercontent.com`;
+        const sec = `GOCSPX-${"agy-secret-value-" + suffix}`.slice(0, 7 + 28);
+        return { idA, sec, blob: `client=${idA}\nsecret=${sec}\n${"padding ".repeat(400_000)}` };
+      };
+      const v1 = makeBlob("111111111111");
+      const binaryPath = path.join(tmp, "agy-fake.bin");
+      fs.writeFileSync(binaryPath, v1.blob);
+
+      const cachePath = path.join(tmp, "agy-oauth.json");
+      const r1 = await resolveAgyOAuthPair({ cachePath, binaryPath, trustFirstCandidate: true });
+      expect(r1?.fromCache).toBe(false);
+      const identity1 = { size: fs.statSync(binaryPath).size, mtimeMs: fs.statSync(binaryPath).mtimeMs };
+
+      // Unchanged binary: served from cache without re-extraction.
+      const r2 = await resolveAgyOAuthPair({ cachePath, binaryPath, trustFirstCandidate: true });
+      expect(r2?.fromCache).toBe(true);
+      expect(r2?.pair.clientSecret).toBe(r1?.pair.clientSecret);
+
+      // agy self-updated: new bytes → new mtime → cache must be refreshed.
+      const v2 = makeBlob("222222222222");
+      fs.writeFileSync(binaryPath, v2.blob);
+      const past = new Date(identity1.mtimeMs - 60_000);
+      fs.utimesSync(binaryPath, past, past);
+
+      const r3 = await resolveAgyOAuthPair({ cachePath, binaryPath, trustFirstCandidate: true });
+      expect(r3?.fromCache).toBe(false);
+      expect(r3?.pair.clientSecret).toBe(v2.sec);
+      expect(r3?.pair.clientSecret).not.toBe(v1.sec);
+
+      // Binary removed but cache present: last known pair still served.
+      fs.rmSync(binaryPath);
+      const r4 = await resolveAgyOAuthPair({ cachePath, binaryPath, trustFirstCandidate: true });
+      expect(r4?.fromCache).toBe(true);
+      expect(r4?.pair.clientSecret).toBe(v2.sec);
     } finally {
       safeRm(tmp);
     }
