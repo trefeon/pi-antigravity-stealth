@@ -17,7 +17,7 @@ In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622)
 
 1. **Unpauses & Delegates to Built-in Antigravity**: Uses OMP's built-in `registerProvider` escape hatch (`customOAuthProviders`) on paused versions (`18.18.4`–`18.18.6`) and delegates OAuth, token refresh, endpoint auto-failover, and wire transport to OMP's shipped `google-antigravity` implementation.
 2. **Argon Quota Counter Isolation & Auto-Patching**: Overrides runtime usage parsing (`src/usage.ts`) so exhausted Gemini 4 Argon weekly buckets (`gemini-argon-*`) stay in their own `argon` counter instead of blocking healthy Gemini (`google`) quota across Pro accounts, and automatically re-applies `cli.js` / `rules.json-*.zst` patches (`src/omp-patch.ts`) whenever `omp update` replaces OMP's bundle.
-3. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.31.2`, CL `6470801290035200`) and keeps `PI_AI_ANTIGRAVITY_*` aligned with official Hub signatures.
+3. **1:1 Antigravity Hub Spoofing**: Dynamically queries Google's production update manifest (`2.32.1`, CL `6001966350991360`) and keeps `PI_AI_ANTIGRAVITY_*` aligned with official Hub signatures.
 4. **Automatic Credential Recovery**: Discovers existing saved OAuth accounts from `agent.db` (`~/.omp/agent/agent.db` and `~/.pi/agent/agent.db`) and restores them via `/agy restore`.
 5. **Custom Client ID Support**: Allows isolating your Google account with private OAuth client credentials (`ANTIGRAVITY_CLIENT_ID` / `ANTIGRAVITY_CLIENT_SECRET` via environment, `.env`, or `~/.omp/antigravity.env`), falling back cleanly to OMP's shipped client config when unset.
 6. **GitHub Release Auto-Updater**: Checks GitHub Releases on interactive session start (every 6 hours, zero API quota) and upgrades script/git installs in place without npm; `/agy update` checks and upgrades immediately.
@@ -212,7 +212,7 @@ Authorization: Bearer <access_token>
 Content-Type: application/json
 Accept: text/event-stream
 Accept-Encoding: gzip
-User-Agent: antigravity/hub/2.31.2 (aidev_client; os_type=windows; arch=amd64; cl=6470801290035200)
+User-Agent: antigravity/hub/2.32.1 (aidev_client; os_type=windows; arch=amd64; cl=6001966350991360)
 ```
 
 **Anti-Ban Rules Enforced:**

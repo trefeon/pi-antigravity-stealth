@@ -288,7 +288,8 @@ export function restoreAllStoredAccounts(): {
 
 export function removeStoredAccount(
   identifier: string,
-  hard = false
+  hard = false,
+  cause = "deleted by user"
 ): { success: boolean; affected: number; message: string } {
   const target = identifier.trim().toLowerCase();
   if (!target) {
@@ -321,8 +322,8 @@ export function removeStoredAccount(
             db.query("DELETE FROM auth_credentials WHERE id = ?").run(row.id);
           } else {
             db.query(
-              "UPDATE auth_credentials SET disabled_cause = 'deleted by user' WHERE id = ?"
-            ).run(row.id);
+              "UPDATE auth_credentials SET disabled_cause = ? WHERE id = ?"
+            ).run(cause, row.id);
           }
           affected++;
         }
@@ -353,6 +354,158 @@ export function removeStoredAccount(
   };
 }
 
+export function markAccountDisabled(
+  identifier: string,
+  cause = "403: Terms of Service violation"
+): { success: boolean; affected: number; message: string } {
+  return removeStoredAccount(identifier, false, cause);
+}
+
+export interface AccountInferenceHealth {
+  status: "healthy" | "banned" | "error";
+  statusCode?: number;
+  message?: string;
+}
+
+export async function probeAccountInference(
+  account: StoredAntigravityAccount,
+  customFetch: typeof fetch = fetch
+): Promise<AccountInferenceHealth> {
+  const token = account.token;
+  if (!token) {
+    return { status: "error", message: "No access token available" };
+  }
+  const userAgent = await buildHubUserAgent();
+  const project = account.projectId && account.projectId.length > 0 ? account.projectId : FALLBACK_PROJECT_ID;
+
+  try {
+    const res = await customFetch(`${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal:streamGenerateContent?alt=sse`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "User-Agent": userAgent,
+      },
+      body: JSON.stringify({
+        project,
+        model: "gemini-3.8-flash-high",
+        request: {
+          contents: [{ role: "user", parts: [{ text: "ping" }] }],
+          generationConfig: { maxOutputTokens: 1 },
+        },
+      }),
+    });
+
+    if (res.ok) {
+      return { status: "healthy", statusCode: res.status };
+    }
+
+    const text = await res.text();
+    const isBanned =
+      res.status === 403 &&
+      (text.includes("violation of Terms of Service") ||
+        text.includes("PERMISSION_DENIED") ||
+        text.includes("disabled in this account"));
+
+    if (isBanned) {
+      return {
+        status: "banned",
+        statusCode: res.status,
+        message: "This service has been disabled in this account for violation of Terms of Service.",
+      };
+    }
+
+    return {
+      status: "error",
+      statusCode: res.status,
+      message: text.slice(0, 200),
+    };
+  } catch (err) {
+    return {
+      status: "error",
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+export interface AccountAuditReport {
+  total: number;
+  active: number;
+  healthy: number;
+  quarantined: number;
+  results: Array<{
+    id: number;
+    email?: string;
+    status: "healthy" | "banned" | "error" | "already-disabled";
+    quarantinedNow: boolean;
+    message?: string;
+  }>;
+}
+
+export async function auditAndQuarantineAccounts(
+  autoQuarantine = true,
+  customFetch: typeof fetch = fetch
+): Promise<AccountAuditReport> {
+  const accounts = listStoredAccounts();
+  const report: AccountAuditReport = {
+    total: accounts.length,
+    active: 0,
+    healthy: 0,
+    quarantined: 0,
+    results: [],
+  };
+
+  for (const acc of accounts) {
+    if (acc.disabledCause !== null) {
+      report.results.push({
+        id: acc.id,
+        email: acc.email,
+        status: "already-disabled",
+        quarantinedNow: false,
+        message: acc.disabledCause,
+      });
+      continue;
+    }
+
+    report.active++;
+    const health = await probeAccountInference(acc, customFetch);
+
+    if (health.status === "healthy") {
+      report.healthy++;
+      report.results.push({
+        id: acc.id,
+        email: acc.email,
+        status: "healthy",
+        quarantinedNow: false,
+      });
+    } else if (health.status === "banned") {
+      let quarantinedNow = false;
+      if (autoQuarantine) {
+        const qRes = markAccountDisabled(String(acc.id), "403: Terms of Service violation");
+        quarantinedNow = qRes.success;
+      }
+      report.quarantined++;
+      report.results.push({
+        id: acc.id,
+        email: acc.email,
+        status: "banned",
+        quarantinedNow,
+        message: health.message,
+      });
+    } else {
+      report.results.push({
+        id: acc.id,
+        email: acc.email,
+        status: "error",
+        quarantinedNow: false,
+        message: health.message,
+      });
+    }
+  }
+
+  return report;
+}
+
 export async function probeAccountTier(accessToken: string): Promise<AccountTierInfo> {
   const userAgent = await buildHubUserAgent();
 
@@ -368,10 +521,13 @@ export async function probeAccountTier(accessToken: string): Promise<AccountTier
     });
 
     if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      const isBanned = res.status === 403 && (text.includes("Terms of Service") || text.includes("PERMISSION_DENIED"));
       return {
-        tierId: "unknown",
-        tierName: `HTTP ${res.status}`,
+        tierId: isBanned ? "banned" : "unknown",
+        tierName: isBanned ? "Banned (ToS Violation)" : `HTTP ${res.status}`,
         isPaid: false,
+        upgradeText: isBanned ? "Account disabled for Terms of Service violation." : undefined,
       };
     }
 
@@ -450,7 +606,12 @@ export async function probeHydrogenEntitlement(
       body: JSON.stringify({ project }),
     });
     if (!res.ok) {
-      return { status: "unknown", note: `HTTP ${res.status}` };
+      const text = await res.text().catch(() => "");
+      const isBanned = res.status === 403 && (text.includes("Terms of Service") || text.includes("PERMISSION_DENIED"));
+      return {
+        status: "disabled",
+        note: isBanned ? "Account disabled for Terms of Service violation" : `HTTP ${res.status}`,
+      };
     }
     const data = (await res.json()) as {
       models?: Record<string, { disabled?: boolean; tagDescription?: string }>;

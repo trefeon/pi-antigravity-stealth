@@ -218,7 +218,8 @@ Known verified versions & changelists:
 | `2.26.0` | `1005016104` | ✅ Active Baseline |
 | `2.30.0` | `6386428939206656` | ✅ Active Baseline |
 | `2.31.0` | `6379060755038208` | ✅ Active Baseline |
-| `2.31.2` | `6470801290035200` | ✅ Latest Production |
+| `2.31.2` | `6470801290035200` | ✅ Active Baseline |
+| `2.32.1` | `6001966350991360` | ✅ Latest Production |
 ---
 
 ## 6. OMP Configuration & Environment Levers
@@ -227,8 +228,8 @@ Oh My Pi (`@oh-my-pi/pi-coding-agent`) already possesses native hooks for these 
 
 | Environment Variable | Default | Recommended Stealth Setting | Purpose |
 |---|---|---|---|
-| `PI_AI_ANTIGRAVITY_VERSION` | `"2.26.0"` | `"2.31.2"` or manifest-resolved | Hub version |
-| `PI_AI_ANTIGRAVITY_CL` | `"1005016104"` | `"6470801290035200"` | Internal Google Changelist |
+| `PI_AI_ANTIGRAVITY_VERSION` | `"2.26.0"` | `"2.32.1"` or manifest-resolved | Hub version |
+| `PI_AI_ANTIGRAVITY_CL` | `"1005016104"` | `"6001966350991360"` | Internal Google Changelist |
 | `PI_AI_ANTIGRAVITY_OS` | `process.platform` | `"windows"` (or native host) | Reported OS type |
 | `PI_AI_ANTIGRAVITY_ARCH` | `process.arch` | `"amd64"` | Reported architecture |
 | `ANTIGRAVITY_CLIENT_ID` | Default public | *Custom GCP OAuth Client ID* | Isolates account from shared bans |

@@ -28,7 +28,7 @@ export const ANTIGRAVITY_SCOPES: readonly string[] = [
 export const MANIFEST_URL =
   "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml";
 
-export const FALLBACK_VERSION = "2.31.2";
-export const FALLBACK_CL = "6470801290035200";
-export const CLI_BASELINE_VERSION = "1.5.8";
+export const FALLBACK_VERSION = "2.32.1";
+export const FALLBACK_CL = "6001966350991360";
+export const CLI_BASELINE_VERSION = "1.5.9";
 export const FALLBACK_PROJECT_ID = "rising-fact-p41fc";

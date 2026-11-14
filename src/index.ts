@@ -30,9 +30,12 @@ import {
 } from "./omp-patch.ts";
 import { createAntigravityUsageProvider } from "./usage.ts";
 import {
+  auditAndQuarantineAccounts,
   findAgentDbPaths,
   listStoredAccounts,
+  markAccountDisabled,
   maskEmail,
+  probeAccountInference,
   probeAccountTier,
   probeHydrogenEntitlement,
   removeStoredAccount,
@@ -47,6 +50,14 @@ import {
   pendingUpdate,
   readUpdateState,
 } from "./updater.ts";
+
+export {
+  auditAndQuarantineAccounts,
+  markAccountDisabled,
+  probeAccountInference,
+  type AccountAuditReport,
+  type AccountInferenceHealth,
+} from "./accounts.ts";
 
 export interface AutocompleteItem {
   value: string;
@@ -65,6 +76,7 @@ export interface AgySubcommandDef {
 export const AGY_SUBCOMMANDS: readonly AgySubcommandDef[] = [
   { name: "status", description: "Show plugin, Hub manifest, and account pool status" },
   { name: "accounts", description: "List saved Antigravity accounts in agent.db" },
+  { name: "check", usage: "[--no-quarantine]", description: "Probe live inference health and quarantine banned 403 accounts" },
   { name: "usage", usage: "[email|id]", takesArgs: true, description: "Show live 5h/weekly quota % per pool" },
   { name: "tier", usage: "[email|id]", takesArgs: true, description: "Probe account tier and Hydrogen entitlement" },
   { name: "login", usage: "[--paste]", description: "Authenticate a Google account (--paste for headless SSH)" },
@@ -413,11 +425,20 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           }
           const lines = [`Saved Antigravity Accounts (${accounts.length}):`];
           for (const a of accounts) {
-            const status = a.disabledCause
-              ? `[Disabled: ${a.disabledCause}]`
-              : a.isExpired
-              ? "[Token Expired - refreshable]"
-              : "[Active]";
+            let status = "[Active]";
+            if (a.disabledCause) {
+              if (
+                a.disabledCause.includes("Terms of Service") ||
+                a.disabledCause.includes("403") ||
+                a.disabledCause.includes("banned")
+              ) {
+                status = `[BANNED: ${a.disabledCause}] ⛔`;
+              } else {
+                status = `[Disabled: ${a.disabledCause}]`;
+              }
+            } else if (a.isExpired) {
+              status = "[Token Expired - refreshable]";
+            }
             lines.push(
               `  • #${a.id} ${maskEmail(a.email || "Unknown")} (Project: ${a.projectId || "default"}) ${status}`
             );
@@ -425,6 +446,40 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           lines.push(`\nUse '/agy tier <id>' to inspect account subscription tier.`);
           lines.push(`Use '/agy remove <email|id>' to deactivate an account.`);
           notify(lines.join("\n"));
+          return;
+        }
+
+        if (subcmd === "check" || subcmd === "audit") {
+          const autoQuarantine = !parts.includes("--no-quarantine");
+          notify("Probing live inference health for saved Antigravity accounts...");
+          const report = await auditAndQuarantineAccounts(autoQuarantine);
+          const lines = [
+            `Google Antigravity Inference Health Audit:`,
+            `  Total: ${report.total} | Active: ${report.active} | Healthy: ${report.healthy} | Quarantined: ${report.quarantined}`,
+            "",
+            "Details:",
+          ];
+          for (const r of report.results) {
+            const icon =
+              r.status === "healthy"
+                ? "✅"
+                : r.status === "banned"
+                ? "⛔"
+                : r.status === "already-disabled"
+                ? "⏸️"
+                : "⚠️";
+            const qNote = r.quarantinedNow ? " [Quarantined in agent.db]" : "";
+            const detail = r.message ? ` - ${r.message}` : "";
+            lines.push(
+              `  ${icon} #${r.id} ${maskEmail(r.email || "Unknown")}: [${r.status.toUpperCase()}]${qNote}${detail}`
+            );
+          }
+          if (report.quarantined > 0) {
+            lines.push(
+              `\n⚠️ Banned account(s) quarantined to prevent 403 Terms of Service errors during OMP requests.`
+            );
+          }
+          notify(lines.join("\n"), report.quarantined > 0 ? "warning" : "info");
           return;
         }
 
@@ -668,6 +723,13 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           const activeAcc = accounts.filter((a) => a.disabledCause === null && !a.isExpired).length;
           const expiredAcc = accounts.filter((a) => a.disabledCause === null && a.isExpired).length;
           const disabledAcc = accounts.filter((a) => a.disabledCause !== null).length;
+          const tosBannedAcc = accounts.filter(
+            (a) =>
+              a.disabledCause &&
+              (a.disabledCause.includes("Terms of Service") ||
+                a.disabledCause.includes("403") ||
+                a.disabledCause.includes("banned"))
+          ).length;
           const upd = readUpdateState();
           const ua = await buildHubUserAgent();
           const patchInfo = inspectOmpPatchStatus({ verifyFiles: true });
@@ -687,7 +749,9 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
                 : "MISSING (set ANTIGRAVITY_CLIENT_ID & ANTIGRAVITY_CLIENT_SECRET for /agy login)"
             }`,
             `Database Paths: ${dbPaths.length > 0 ? dbPaths.join(", ") : "none created yet"}`,
-            `Accounts: ${activeAcc} active, ${expiredAcc} expired, ${disabledAcc} disabled`,
+            `Accounts: ${activeAcc} active, ${expiredAcc} expired, ${disabledAcc} disabled${
+              tosBannedAcc > 0 ? ` (${tosBannedAcc} ToS quarantined)` : ""
+            }`,
             `Hub User-Agent: ${ua}`,
             `Updater Cache: ${
               upd

@@ -11,6 +11,7 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
 
 - `/agy status` — Active plugin version, install kind, Hub User-Agent/CL, OAuth mode, and account count.
 - `/agy accounts` — List saved accounts in `agent.db` with IDs, masked emails, project IDs, and expiration/disabled state.
+- `/agy check [--no-quarantine]` — Probe live inference health across saved accounts and automatically quarantine accounts banned with 403 Terms of Service violations.
 - `/agy usage [email|id]` — Query live quota percentages and reset windows grouped by **Gemini**, **Gemini 4 Argon**, and **Claude & GPT (shared)**.
 - `/agy tier [email|id]` — Probe subscription tier (`Free Tier`, `Google AI Plus`, `Google AI Pro`, `Google AI Ultra`).
 - `/agy doctor` — Print sanitized host, runtime, `omp-builtin`, `agent.db`, Hub manifest, and updater diagnostics.
@@ -32,3 +33,8 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
 4. **Updater Control:**
    - Set `PI_ANTIGRAVITY_SKIP_UPDATE_CHECK=1` to disable automatic 6-hour GitHub Release checks.
    - Developer checkouts containing `.git` are never overwritten automatically.
+5. **403 Terms of Service Violation ("This service has been disabled in this account"):**
+   - Occurs when an account is banned/restricted by Google enforcement for Cloud Code Assist. Metadata endpoints (`loadCodeAssist`) may still return 200 while inference (`streamGenerateContent`) fails with 403.
+   - Run `/agy check` to test inference health across all saved accounts and auto-quarantine banned accounts with `disabled_cause = '403: Terms of Service violation'`.
+   - Quarantining the banned account prevents OMP from selecting it and crashing during requests or model fallback (e.g. `gemini-4-hydrogen` -> `gemini-3.8-flash`).
+   - Pro/Ultra-only models like `gemini-4-hydrogen` require at least one active Google AI Pro/Ultra account; if all remaining active accounts are Free/Plus, requests fall back to available models.

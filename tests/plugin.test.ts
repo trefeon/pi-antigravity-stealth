@@ -27,8 +27,10 @@ import { applyUpstreamSync } from "../scripts/check-upstream-drift.ts";
 import { FALLBACK_PROJECT_ID } from "../src/constants.ts";
 import { type AntigravityUsageProvider, sanitizeAntigravityUsageReport } from "../src/usage.ts";
 import {
+  auditAndQuarantineAccounts,
   listStoredAccounts,
   maskEmail,
+  probeAccountInference,
   removeStoredAccount,
   saveAccountToAgentDb,
 } from "../src/accounts.ts";
@@ -711,6 +713,104 @@ describe("pi-antigravity-stealth Plugin", () => {
       expect(exact.affected).toBe(1);
       const remaining = listStoredAccounts().map((a) => a.email);
       expect(remaining).toEqual(["malice@x.com"]);
+    } finally {
+      if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
+      else delete process.env.USERPROFILE;
+      if (prevHome !== undefined) process.env.HOME = prevHome;
+      else delete process.env.HOME;
+      safeRm(tmpHome);
+    }
+  });
+
+  it("detects 403 Terms of Service violation in probeAccountInference and auto-quarantines", async () => {
+    const healthyAcc = {
+      id: 101,
+      email: "healthy@x.com",
+      token: "tok-healthy",
+      isExpired: false,
+      hasRefreshToken: true,
+      disabledCause: null,
+      dbPath: "memory",
+    };
+
+    const bannedAcc = {
+      id: 102,
+      email: "banned@x.com",
+      token: "tok-banned",
+      isExpired: false,
+      hasRefreshToken: true,
+      disabledCause: null,
+      dbPath: "memory",
+    };
+
+    // Mock fetch
+    const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>)?.["Authorization"] || "";
+      if (auth.includes("tok-healthy")) {
+        return new Response('data: {"response":{"candidates":[]}}', { status: 200 });
+      }
+      if (auth.includes("tok-banned")) {
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 403,
+              message:
+                "This service has been disabled in this account for violation of Terms of Service. Please submit an appeal to continue using this product.",
+              status: "PERMISSION_DENIED",
+            },
+          }),
+          { status: 403 }
+        );
+      }
+      return new Response("Not found", { status: 404 });
+    }) as unknown as typeof fetch;
+
+    const resHealthy = await probeAccountInference(healthyAcc, mockFetch);
+    expect(resHealthy.status).toBe("healthy");
+
+    const resBanned = await probeAccountInference(bannedAcc, mockFetch);
+    expect(resBanned.status).toBe("banned");
+    expect(resBanned.message).toContain("Terms of Service");
+  });
+
+  it("audits accounts and automatically quarantines banned accounts in agent.db", async () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-audit-"));
+    const prevUserProfile = process.env.USERPROFILE;
+    const prevHome = process.env.HOME;
+    try {
+      fs.mkdirSync(path.join(tmpHome, ".omp", "agent"), { recursive: true });
+      process.env.USERPROFILE = tmpHome;
+      process.env.HOME = tmpHome;
+
+      saveAccountToAgentDb({ access_token: "tok-h", email: "h@x.com", projectId: "p" });
+      saveAccountToAgentDb({ access_token: "tok-b", email: "b@x.com", projectId: "p" });
+
+      const mockFetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        const auth = (init?.headers as Record<string, string>)?.["Authorization"] || "";
+        if (auth.includes("tok-h")) {
+          return new Response("data: ok", { status: 200 });
+        }
+        return new Response(
+          JSON.stringify({
+            error: {
+              code: 403,
+              message: "This service has been disabled in this account for violation of Terms of Service.",
+              status: "PERMISSION_DENIED",
+            },
+          }),
+          { status: 403 }
+        );
+      }) as unknown as typeof fetch;
+
+      const report = await auditAndQuarantineAccounts(true, mockFetch);
+      expect(report.total).toBe(2);
+      expect(report.active).toBe(2);
+      expect(report.healthy).toBe(1);
+      expect(report.quarantined).toBe(1);
+
+      const accountsAfter = listStoredAccounts();
+      const banned = accountsAfter.find((a) => a.email === "b@x.com");
+      expect(banned?.disabledCause).toContain("Terms of Service");
     } finally {
       if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
       else delete process.env.USERPROFILE;
