@@ -26,6 +26,9 @@ export interface AgyOAuthPair {
 export interface AgyClientCache extends AgyOAuthPair {
   source: "agy-binary" | "manual";
   binaryPath?: string;
+  /** Binary identity at extraction time; a change triggers automatic re-extraction. */
+  binaryMtimeMs?: number;
+  binarySize?: number;
   extractedAt?: string;
 }
 
@@ -57,16 +60,51 @@ export function defaultAgyCachePath(home?: string): string {
   return path.join(base, ".omp", "agent", "agy-oauth.json");
 }
 
-export function defaultAgyBinaryPath(platform: NodeJS.Platform = process.platform): string | null {
+/**
+ * Candidate install locations for the official CLI binary, per platform.
+ * The Linux/macOS tarballs ship a binary named `antigravity` (the Windows
+ * installer uses `agy.exe`); the CLI installs itself into `~/.local/bin` on
+ * Linux ("PATH verification: ~/.local/bin is correctly configured") and
+ * `%LOCALAPPDATA%\agy\bin` on Windows.
+ */
+export function defaultAgyBinaryCandidates(platform: NodeJS.Platform = process.platform): string[] {
   const localAppData = process.env.LOCALAPPDATA ?? "";
-  const home = process.env.USERPROFILE ?? process.env.HOME ?? "";
+  const home = process.env.USERPROFILE || process.env.HOME || "";
+  const xdgData = process.env.XDG_DATA_HOME || (home ? path.join(home, ".local", "share") : "");
+  const xdgBin = home ? path.join(home, ".local", "bin") : "";
+
+  const candidates: string[] = [];
   if (platform === "win32") {
-    return localAppData ? path.join(localAppData, "agy", "bin", "agy.exe") : null;
+    if (localAppData) candidates.push(path.join(localAppData, "agy", "bin", "agy.exe"));
+    if (xdgBin) candidates.push(path.join(xdgBin, "agy.exe"), path.join(xdgBin, "antigravity.exe"));
+  } else if (platform === "darwin") {
+    if (home) candidates.push(path.join(home, "Library", "Application Support", "agy", "bin", "agy"));
+    if (xdgBin) candidates.push(path.join(xdgBin, "antigravity"), path.join(xdgBin, "agy"));
+  } else {
+    if (xdgData) candidates.push(path.join(xdgData, "agy", "bin", "antigravity"), path.join(xdgData, "agy", "bin", "agy"));
+    if (xdgBin) candidates.push(path.join(xdgBin, "antigravity"), path.join(xdgBin, "agy"));
+    candidates.push("/usr/local/bin/antigravity", "/usr/local/bin/agy", "/usr/bin/antigravity", "/usr/bin/agy");
   }
-  if (platform === "darwin") {
-    return home ? path.join(home, "Library", "Application Support", "agy", "bin", "agy") : null;
+
+  // Also scan PATH (covers custom install prefixes on Armbian/Debian hosts).
+  const pathEnv = process.env.PATH ?? "";
+  for (const dir of pathEnv.split(path.delimiter)) {
+    if (!dir) continue;
+    candidates.push(
+      path.join(dir, platform === "win32" ? "agy.exe" : "agy"),
+      path.join(dir, platform === "win32" ? "antigravity.exe" : "antigravity")
+    );
   }
-  return home ? path.join(home, ".local", "agy", "bin", "agy") : null;
+  return [...new Set(candidates)];
+}
+
+export function defaultAgyBinaryPath(platform: NodeJS.Platform = process.platform): string | null {
+  for (const candidate of defaultAgyBinaryCandidates(platform)) {
+    try {
+      if (fs.statSync(candidate).isFile()) return candidate;
+    } catch {}
+  }
+  return null;
 }
 
 /**
@@ -158,6 +196,8 @@ export function readAgyClientCache(cachePath: string): AgyClientCache | null {
         clientSecret: raw.clientSecret,
         source: raw.source === "manual" ? "manual" : "agy-binary",
         ...(typeof raw.binaryPath === "string" ? { binaryPath: raw.binaryPath } : {}),
+        ...(typeof raw.binaryMtimeMs === "number" ? { binaryMtimeMs: raw.binaryMtimeMs } : {}),
+        ...(typeof raw.binarySize === "number" ? { binarySize: raw.binarySize } : {}),
         ...(typeof raw.extractedAt === "string" ? { extractedAt: raw.extractedAt } : {}),
       };
     }
@@ -168,7 +208,7 @@ export function readAgyClientCache(cachePath: string): AgyClientCache | null {
 export function writeAgyClientCache(
   cachePath: string,
   pair: AgyOAuthPair,
-  meta: { source: "agy-binary" | "manual"; binaryPath?: string }
+  meta: { source: "agy-binary" | "manual"; binaryPath?: string; binaryMtimeMs?: number; binarySize?: number }
 ): boolean {
   try {
     fs.mkdirSync(path.dirname(cachePath), { recursive: true, mode: 0o700 });
@@ -183,6 +223,25 @@ export function writeAgyClientCache(
   return false;
 }
 
+/** Drops the cached pair so the next resolve re-extracts from the binary. */
+export function invalidateAgyClientCache(cachePath: string = defaultAgyCachePath()): boolean {
+  try {
+    fs.rmSync(cachePath, { force: true });
+    return true;
+  } catch {}
+  return false;
+}
+
+function statBinary(binaryPath: string): { mtimeMs: number; size: number } | null {
+  try {
+    const stat = fs.statSync(binaryPath);
+    if (!stat.isFile()) return null;
+    return { mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch {
+    return null;
+  }
+}
+
 export interface ResolveAgyPairOptions {
   cachePath?: string;
   binaryPath?: string;
@@ -192,8 +251,12 @@ export interface ResolveAgyPairOptions {
 }
 
 /**
- * Full resolver: cache → binary extraction + live pairing → null.
- * Successful extraction is cached so later runs cost one file read.
+ * Full resolver that always follows the installed `agy` binary:
+ *   1. cache + unchanged binary identity (path + size + mtime) → cached pair
+ *   2. binary present but changed (agy self-updated, Google rotated the pair) →
+ *      re-extract + live pair-verify + refresh cache
+ *   3. binary absent → last cached pair (still valid until Google rotates)
+ *   4. nothing → null
  */
 export async function resolveAgyOAuthPair(options: ResolveAgyPairOptions = {}): Promise<{
   pair: AgyOAuthPair;
@@ -201,27 +264,53 @@ export async function resolveAgyOAuthPair(options: ResolveAgyPairOptions = {}): 
   fromCache: boolean;
 } | null> {
   const cachePath = options.cachePath ?? defaultAgyCachePath();
-  const cached = readAgyClientCache(cachePath);
-  if (cached) {
-    return { pair: { clientId: cached.clientId, clientSecret: cached.clientSecret }, source: cached.source, fromCache: true };
-  }
-
   const binaryPath =
     options.binaryPath ??
     process.env.AGY_BINARY_PATH?.trim() ??
     defaultAgyBinaryPath() ??
     "";
-  if (!binaryPath) return null;
+  const cached = readAgyClientCache(cachePath);
+  const binary = binaryPath ? statBinary(binaryPath) : null;
+  const asResult = (cache: AgyClientCache) => ({
+    pair: { clientId: cache.clientId, clientSecret: cache.clientSecret },
+    source: cache.source,
+    fromCache: true,
+  });
+
+  // Cache is fresh while the recorded binary identity still matches.
+  if (
+    cached &&
+    (!binary ||
+      (cached.binaryPath === binaryPath &&
+        cached.binarySize === binary.size &&
+        Math.abs((cached.binaryMtimeMs ?? 0) - binary.mtimeMs) < 2000))
+  ) {
+    return asResult(cached);
+  }
+
+  if (!binary) return cached ? asResult(cached) : null;
 
   const candidates = extractAgyOAuthCandidates(binaryPath);
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    // Unexpected binary layout — keep serving the last known pair.
+    return cached ? asResult(cached) : null;
+  }
 
   const paired = options.trustFirstCandidate
     ? candidates[0]
     : await pairAgyOAuthClient(candidates, options.probeFetch);
-  if (!paired) return null;
+  if (!paired) {
+    // Every candidate rejected: keep the last cache rather than going
+    // credential-less (Google may rotate mid-update; the next resolve retries).
+    return cached ? asResult(cached) : null;
+  }
 
-  writeAgyClientCache(cachePath, paired, { source: "agy-binary", binaryPath });
+  writeAgyClientCache(cachePath, paired, {
+    source: "agy-binary",
+    binaryPath,
+    binaryMtimeMs: binary.mtimeMs,
+    binarySize: binary.size,
+  });
   return { pair: paired, source: "agy-binary", fromCache: false };
 }
 

@@ -27,6 +27,7 @@ import { buildHubUserAgent } from "./manifest.ts";
 import { getBuiltinAntigravityClientCredentials } from "./omp-builtin.ts";
 import {
   defaultAgyCachePath,
+  invalidateAgyClientCache,
   readAgyClientCache,
   resolveAgyOAuthPair,
 } from "./agy-client.ts";
@@ -534,62 +535,78 @@ export async function refreshAccessToken(
   const userAgent = await buildHubUserAgent();
   let lastError = "";
 
-  for (const candidate of candidates) {
-    const params = new URLSearchParams({
-      client_id: candidate.clientId,
-      client_secret: candidate.clientSecret,
-      grant_type: "refresh_token",
-      refresh_token: refreshToken,
-    });
-
-    let res: Response;
-    try {
-      res = await fetch(OAUTH_TOKEN_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-www-form-urlencoded",
-          "User-Agent": userAgent,
-          Accept: "application/json",
-        },
-        body: params.toString(),
-        signal: options?.signal,
+  // Two passes: on pass 0, if every known pair is rejected with auth-shaped
+  // errors (Google rotated the client in a fresh agy release), drop the cache,
+  // re-extract from the local binary, and retry once with the fresh pair.
+  for (let pass = 0; pass < 2; pass++) {
+    for (const candidate of candidates) {
+      const params = new URLSearchParams({
+        client_id: candidate.clientId,
+        client_secret: candidate.clientSecret,
+        grant_type: "refresh_token",
+        refresh_token: refreshToken,
       });
-    } catch (err) {
-      throw err;
+
+      let res: Response;
+      try {
+        res = await fetch(OAUTH_TOKEN_URL, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": userAgent,
+            Accept: "application/json",
+          },
+          body: params.toString(),
+          signal: options?.signal,
+        });
+      } catch (err) {
+        throw err;
+      }
+
+      if (!res.ok) {
+        const errText = await res.text();
+        lastError = `(${candidate.clientId.slice(0, 16)}…) ${res.status}: ${errText.slice(0, 200)}`;
+        // Client-bound mismatch surfaces as 400/401 invalid_client /
+        // unauthorized_client / invalid_grant — try the next candidate.
+        if (res.status === 400 || res.status === 401) continue;
+        throw new Error(`Token refresh failed (${res.status}): ${errText}`);
+      }
+
+      const tokenData = (await res.json()) as Record<string, unknown>;
+      const accessToken = typeof tokenData.access_token === "string" ? tokenData.access_token : "";
+      const newRefreshToken = typeof tokenData.refresh_token === "string" ? tokenData.refresh_token : refreshToken;
+      const expiresIn = typeof tokenData.expires_in === "number" ? tokenData.expires_in : 3600;
+
+      // Persist the client binding so the next refresh starts with the right pair.
+      try {
+        recordCredentialClient(
+          { email: options?.email, refreshToken: refreshToken },
+          candidate.clientId
+        );
+      } catch {}
+
+      return {
+        access_token: accessToken,
+        refresh_token: newRefreshToken,
+        expires_in: expiresIn,
+        expires_at: Date.now() + expiresIn * 1000 - 300000,
+        projectId: existingProjectId || FALLBACK_PROJECT_ID,
+        oauthClientId: candidate.clientId,
+        ...(options?.email ? { email: options.email } : {}),
+        ...(options?.accountId ? { accountId: options.accountId } : {}),
+      };
     }
 
-    if (!res.ok) {
-      const errText = await res.text();
-      lastError = `(${candidate.clientId.slice(0, 16)}…) ${res.status}: ${errText.slice(0, 200)}`;
-      // Client-bound mismatch surfaces as 400/401 invalid_client /
-      // unauthorized_client / invalid_grant — try the next candidate.
-      if (res.status === 400 || res.status === 401) continue;
-      throw new Error(`Token refresh failed (${res.status}): ${errText}`);
+    if (pass === 0 && !options?.signal?.aborted) {
+      invalidateAgyClientCache(defaultAgyCachePath());
+      await ensureAgyOAuthClientCached().catch(() => false);
+      const fresh = readAgyClientCache(defaultAgyCachePath());
+      if (fresh && !candidates.some((c) => c.clientId === fresh.clientId)) {
+        candidates.unshift({ clientId: fresh.clientId, clientSecret: fresh.clientSecret });
+        continue;
+      }
+      break;
     }
-
-    const tokenData = (await res.json()) as Record<string, unknown>;
-    const accessToken = typeof tokenData.access_token === "string" ? tokenData.access_token : "";
-    const newRefreshToken = typeof tokenData.refresh_token === "string" ? tokenData.refresh_token : refreshToken;
-    const expiresIn = typeof tokenData.expires_in === "number" ? tokenData.expires_in : 3600;
-
-    // Persist the client binding so the next refresh starts with the right pair.
-    try {
-      recordCredentialClient(
-        { email: options?.email, refreshToken: refreshToken },
-        candidate.clientId
-      );
-    } catch {}
-
-    return {
-      access_token: accessToken,
-      refresh_token: newRefreshToken,
-      expires_in: expiresIn,
-      expires_at: Date.now() + expiresIn * 1000 - 300000,
-      projectId: existingProjectId || FALLBACK_PROJECT_ID,
-      oauthClientId: candidate.clientId,
-      ...(options?.email ? { email: options.email } : {}),
-      ...(options?.accountId ? { accountId: options.accountId } : {}),
-    };
   }
 
   throw new Error(`Token refresh failed for all known OAuth clients. Last error: ${lastError}`);
