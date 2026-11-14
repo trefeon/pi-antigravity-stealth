@@ -29,8 +29,10 @@ import { type AntigravityUsageProvider, sanitizeAntigravityUsageReport } from ".
 import {
   auditAndQuarantineAccounts,
   listStoredAccounts,
+  markAccountDisabled,
   maskEmail,
   probeAccountInference,
+  purgeBannedAccounts,
   removeStoredAccount,
   saveAccountToAgentDb,
 } from "../src/accounts.ts";
@@ -809,8 +811,18 @@ describe("pi-antigravity-stealth Plugin", () => {
       expect(report.quarantined).toBe(1);
 
       const accountsAfter = listStoredAccounts();
-      const banned = accountsAfter.find((a) => a.email === "b@x.com");
-      expect(banned?.disabledCause).toContain("Terms of Service");
+      expect(accountsAfter).toHaveLength(1);
+      expect(accountsAfter[0]?.email).toBe("h@x.com");
+      expect(accountsAfter.find((a) => a.email === "b@x.com")).toBeUndefined();
+
+      // Test purgeBannedAccounts
+      saveAccountToAgentDb({ access_token: "tok-tos", email: "tos@x.com", projectId: "p" });
+      markAccountDisabled("tos@x.com", "403: Terms of Service violation");
+      expect(listStoredAccounts()).toHaveLength(2);
+      const purgeRes = purgeBannedAccounts();
+      expect(purgeRes.purged).toBe(1);
+      expect(listStoredAccounts()).toHaveLength(1);
+      expect(listStoredAccounts()[0]?.email).toBe("h@x.com");
     } finally {
       if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
       else delete process.env.USERPROFILE;

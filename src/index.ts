@@ -38,6 +38,7 @@ import {
   probeAccountInference,
   probeAccountTier,
   probeHydrogenEntitlement,
+  purgeBannedAccounts,
   removeStoredAccount,
   restoreAllStoredAccounts,
   saveAccountToAgentDb,
@@ -55,6 +56,7 @@ export {
   auditAndQuarantineAccounts,
   markAccountDisabled,
   probeAccountInference,
+  purgeBannedAccounts,
   type AccountAuditReport,
   type AccountInferenceHealth,
 } from "./accounts.ts";
@@ -76,7 +78,7 @@ export interface AgySubcommandDef {
 export const AGY_SUBCOMMANDS: readonly AgySubcommandDef[] = [
   { name: "status", description: "Show plugin, Hub manifest, and account pool status" },
   { name: "accounts", description: "List saved Antigravity accounts in agent.db" },
-  { name: "check", usage: "[--no-quarantine]", description: "Probe live inference health and quarantine banned 403 accounts" },
+  { name: "check", usage: "[--no-quarantine]", description: "Probe live inference health and auto-remove banned 403 accounts" },
   { name: "usage", usage: "[email|id]", takesArgs: true, description: "Show live 5h/weekly quota % per pool" },
   { name: "tier", usage: "[email|id]", takesArgs: true, description: "Probe account tier and Hydrogen entitlement" },
   { name: "login", usage: "[--paste]", description: "Authenticate a Google account (--paste for headless SSH)" },
@@ -378,6 +380,14 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
   const storedAccounts = listStoredAccounts();
   const activeCount = storedAccounts.filter((a) => a.disabledCause === null).length;
 
+  // Proactively auto-remove any accounts that have recorded ToS violations
+  const purgedBanned = purgeBannedAccounts();
+  if (purgedBanned.purged > 0) {
+    pi.logger?.warn?.(
+      `Auto-removed ${purgedBanned.purged} Antigravity account(s) due to Terms of Service violation: ${purgedBanned.accounts.join(", ")}`
+    );
+  }
+
   const baseUrlOverride = process.env.ANTIGRAVITY_BASE_URL?.trim();
 
   // Registering an OAuth handler under "google-antigravity" populates customOAuthProviders,
@@ -451,11 +461,11 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
 
         if (subcmd === "check" || subcmd === "audit") {
           const autoQuarantine = !parts.includes("--no-quarantine");
-          notify("Probing live inference health for saved Antigravity accounts...");
+          notify("Probing live inference health and auto-removing accounts with Terms of Service violations...");
           const report = await auditAndQuarantineAccounts(autoQuarantine);
           const lines = [
             `Google Antigravity Inference Health Audit:`,
-            `  Total: ${report.total} | Active: ${report.active} | Healthy: ${report.healthy} | Quarantined: ${report.quarantined}`,
+            `  Total: ${report.total} | Active: ${report.active} | Healthy: ${report.healthy} | Auto-Removed: ${report.quarantined}`,
             "",
             "Details:",
           ];
@@ -468,7 +478,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
                 : r.status === "already-disabled"
                 ? "⏸️"
                 : "⚠️";
-            const qNote = r.quarantinedNow ? " [Quarantined in agent.db]" : "";
+            const qNote = r.quarantinedNow ? " [Auto-removed from agent.db]" : "";
             const detail = r.message ? ` - ${r.message}` : "";
             lines.push(
               `  ${icon} #${r.id} ${maskEmail(r.email || "Unknown")}: [${r.status.toUpperCase()}]${qNote}${detail}`
@@ -476,7 +486,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           }
           if (report.quarantined > 0) {
             lines.push(
-              `\n⚠️ Banned account(s) quarantined to prevent 403 Terms of Service errors during OMP requests.`
+              `\n⚠️ Banned account(s) automatically removed from agent.db to prevent 403 Terms of Service errors during OMP requests.`
             );
           }
           notify(lines.join("\n"), report.quarantined > 0 ? "warning" : "info");
@@ -814,6 +824,14 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
         ctx.ui.notify(msg, "info");
       } else {
         pi.logger?.info?.(msg);
+      }
+    }
+    if (purgedBanned.purged > 0) {
+      const msg = `Auto-removed ${purgedBanned.purged} Antigravity account(s) due to Google Terms of Service violation: ${purgedBanned.accounts.join(", ")}`;
+      if (ctx.ui) {
+        ctx.ui.notify(msg, "warning");
+      } else {
+        pi.logger?.warn?.(msg);
       }
     }
     if (process.env.PI_ANTIGRAVITY_SKIP_UPDATE_CHECK) return;

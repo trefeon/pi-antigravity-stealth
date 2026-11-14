@@ -361,6 +361,51 @@ export function markAccountDisabled(
   return removeStoredAccount(identifier, false, cause);
 }
 
+export function purgeBannedAccounts(): {
+  purged: number;
+  accounts: string[];
+} {
+  const dbPaths = findAgentDbPaths();
+  let purged = 0;
+  const accounts: string[] = [];
+
+  for (const dbPath of dbPaths) {
+    try {
+      const db = openSqlite(dbPath, false);
+      if (!db) continue;
+      const rows = db
+        .query(
+          "SELECT id, identity_key, disabled_cause FROM auth_credentials WHERE provider = 'google-antigravity'"
+        )
+        .all() as Array<{
+        id: number;
+        identity_key: string | null;
+        disabled_cause: string | null;
+      }>;
+
+      for (const row of rows) {
+        const isBanned =
+          row.disabled_cause !== null &&
+          (row.disabled_cause.includes("Terms of Service") ||
+            row.disabled_cause.includes("403") ||
+            row.disabled_cause.includes("banned"));
+
+        if (isBanned) {
+          const email = row.identity_key?.startsWith("email:")
+            ? row.identity_key.slice("email:".length)
+            : `ID #${row.id}`;
+          db.query("DELETE FROM auth_credentials WHERE id = ?").run(row.id);
+          accounts.push(maskEmail(email));
+          purged++;
+        }
+      }
+      db.close();
+    } catch {}
+  }
+
+  return { purged, accounts };
+}
+
 export interface AccountInferenceHealth {
   status: "healthy" | "banned" | "error";
   statusCode?: number;
@@ -443,7 +488,7 @@ export interface AccountAuditReport {
 }
 
 export async function auditAndQuarantineAccounts(
-  autoQuarantine = true,
+  autoRemove = true,
   customFetch: typeof fetch = fetch
 ): Promise<AccountAuditReport> {
   const accounts = listStoredAccounts();
@@ -457,13 +502,27 @@ export async function auditAndQuarantineAccounts(
 
   for (const acc of accounts) {
     if (acc.disabledCause !== null) {
+      const isBanned =
+        acc.disabledCause.includes("Terms of Service") ||
+        acc.disabledCause.includes("403") ||
+        acc.disabledCause.includes("banned");
+
+      let removedNow = false;
+      if (isBanned && autoRemove) {
+        const delRes = removeStoredAccount(String(acc.id), true);
+        removedNow = delRes.success;
+      }
+
       report.results.push({
         id: acc.id,
         email: acc.email,
-        status: "already-disabled",
-        quarantinedNow: false,
+        status: isBanned ? "banned" : "already-disabled",
+        quarantinedNow: removedNow,
         message: acc.disabledCause,
       });
+      if (removedNow) {
+        report.quarantined++;
+      }
       continue;
     }
 
@@ -479,17 +538,20 @@ export async function auditAndQuarantineAccounts(
         quarantinedNow: false,
       });
     } else if (health.status === "banned") {
-      let quarantinedNow = false;
-      if (autoQuarantine) {
+      let removedNow = false;
+      if (autoRemove) {
+        const delRes = removeStoredAccount(String(acc.id), true);
+        removedNow = delRes.success;
+      } else {
         const qRes = markAccountDisabled(String(acc.id), "403: Terms of Service violation");
-        quarantinedNow = qRes.success;
+        removedNow = qRes.success;
       }
       report.quarantined++;
       report.results.push({
         id: acc.id,
         email: acc.email,
         status: "banned",
-        quarantinedNow,
+        quarantinedNow: removedNow,
         message: health.message,
       });
     } else {
