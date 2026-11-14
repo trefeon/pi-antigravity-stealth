@@ -23,7 +23,7 @@ In OMP **v18.18.4** ([PR #18622](https://github.com/can1357/oh-my-pi/pull/18622)
 6. **GitHub Release Auto-Updater**: Checks GitHub Releases on interactive session start (every 6 hours, zero API quota) and upgrades script/git installs in place without npm; `/agy update` checks and upgrades immediately.
 7. **Interactive Command Snippets & Quota Diagnostics**: Registers `/agy` argument completions (`getArgumentCompletions`) with per-subcommand descriptions and account ID suggestions, plus `/agy usage`, `/agy patch`, `/agy doctor`, headless `--paste` OAuth login, and a bundled agent skill (`skills/antigravity-stealth`).
 8. **Continuous Upstream Automation**: Scheduled GitHub Actions monitor Google Hub manifests, CLI binaries, upstream OMP KDL rules, and `@oh-my-pi/pi-coding-agent` npm releases daily, auto-syncing baselines, verifying tests/patch regexes, and cutting verified patch releases when safe.
-> **Host Compatibility Note:** On **OMP** (`@oh-my-pi/pi-coding-agent`), all 13 built-in `google-antigravity` models and streaming transport are unlocked out of the box. On **Pi Coding Agent** (`pi`), the extension, `/agy` commands, bundled skill, and updater load cleanly on Node `>=22.5`, while Antigravity model inference still requires OMP (since `@earendil-works/pi-ai` does not ship Cloud Code Assist wire transport natively).
+> **Host Compatibility Note:** On **OMP** (`@oh-my-pi/pi-coding-agent`), all 14 built-in `google-antigravity` models and streaming transport are unlocked out of the box. On **Pi Coding Agent** (`pi`), the extension, `/agy` commands, bundled skill, and updater load cleanly on Node `>=22.5`, while Antigravity model inference still requires OMP (since `@earendil-works/pi-ai` does not ship Cloud Code Assist wire transport natively).
 
 ---
 
@@ -45,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main
 irm https://raw.githubusercontent.com/trefeon/pi-antigravity-stealth/main/scripts/install.ps1 | iex
 ```
 
-Verify that the plugin is loaded and all 13 models are unlocked:
+Verify that the plugin is loaded and all 14 models are unlocked:
 
 ```bash
 omp plugin list

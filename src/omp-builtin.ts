@@ -10,6 +10,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createRequire } from "module";
 import { pathToFileURL } from "url";
+import { getZstdFns } from "./omp-patch.ts";
 
 export interface BuiltinOAuthClientCredentials {
   clientId: string;
@@ -127,7 +128,12 @@ export function getBuiltinAntigravityClientCredentials(): BuiltinOAuthClientCred
       return null;
     }
     const compressed = fs.readFileSync(path.join(distDir, zstFile));
-    const data = JSON.parse(Bun.zstdDecompressSync(compressed).toString("utf8")) as {
+    const zstd = getZstdFns();
+    if (!zstd) {
+      cachedRulesClientCreds = null;
+      return null;
+    }
+    const data = JSON.parse(zstd.decompress(compressed).toString("utf8")) as {
       auth?: { providers?: Array<Record<string, unknown>> };
     };
     const ag = data.auth?.providers?.find((p) => p.id === "google-antigravity");

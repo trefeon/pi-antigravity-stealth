@@ -146,7 +146,7 @@ function readObjectProp(obj: unknown, key: string): unknown {
   return Reflect.get(obj, key);
 }
 
-function getZstdFns(): {
+export function getZstdFns(): {
   decompress: (buf: Uint8Array) => Buffer;
   compress: (buf: Uint8Array) => Buffer;
 } | null {
@@ -540,14 +540,26 @@ function acquirePatchLock(statePath: string): string | null {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
     fs.closeSync(fs.openSync(lockPath, "wx", 0o600));
     return lockPath;
-  } catch {
+  } catch {}
+
+  // Stale reclaim: rename the old lock aside instead of unlinking it, and put it
+  // back if it turns out to be still fresh. Reclaiming by unlink could delete a
+  // racer's just-created lock and yield two concurrent holders.
+  try {
+    const stalePath = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+    fs.renameSync(lockPath, stalePath);
+    if (Date.now() - fs.statSync(stalePath).mtimeMs <= LOCK_STALE_MS) {
+      try {
+        fs.renameSync(stalePath, lockPath);
+      } catch {}
+      return null;
+    }
     try {
-      if (Date.now() - fs.statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-        fs.unlinkSync(lockPath);
-        fs.closeSync(fs.openSync(lockPath, "wx", 0o600));
-        return lockPath;
-      }
+      fs.unlinkSync(stalePath);
     } catch {}
+    fs.closeSync(fs.openSync(lockPath, "wx", 0o600));
+    return lockPath;
+  } catch {
     return null;
   }
 }

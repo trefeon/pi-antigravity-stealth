@@ -8,13 +8,6 @@ export const ANTIGRAVITY_ENDPOINT_DAILY = "https://daily-cloudcode-pa.googleapis
 export const ANTIGRAVITY_ENDPOINT_PROD = "https://cloudcode-pa.googleapis.com";
 export const ANTIGRAVITY_ENDPOINT_SANDBOX = "https://daily-cloudcode-pa.sandbox.googleapis.com";
 
-// Client credentials supplied via environment or loaded from local configuration
-export const DEFAULT_CLIENT_ID =
-  process.env.ANTIGRAVITY_CLIENT_ID?.trim() || "";
-
-export const DEFAULT_CLIENT_SECRET =
-  process.env.ANTIGRAVITY_CLIENT_SECRET?.trim() || "";
-
 export const OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 export const OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const OAUTH_USERINFO_URL = "https://www.googleapis.com/oauth2/v1/userinfo?alt=json";

@@ -122,6 +122,7 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
         let expiresAt: number | undefined;
         let token: string | undefined;
         let hasRefreshToken = false;
+        let refreshToken: string | undefined;
 
         if (row.identity_key?.startsWith("email:")) {
           email = row.identity_key.slice(6);
@@ -145,21 +146,12 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
           } else if (typeof parsed.expires_at === "number") {
             expiresAt = parsed.expires_at;
           }
-          if (
-            (typeof parsed.refresh === "string" && parsed.refresh.length > 0) ||
-            (typeof parsed.refresh_token === "string" && parsed.refresh_token.length > 0)
-          ) {
+          if (typeof parsed.refresh === "string" && parsed.refresh.length > 0) {
+            refreshToken = parsed.refresh;
             hasRefreshToken = true;
-          }
-        } catch {}
-
-        let refreshToken: string | undefined;
-        try {
-          const parsedRefresh = JSON.parse(row.data) as Record<string, unknown>;
-          if (typeof parsedRefresh.refresh === "string" && parsedRefresh.refresh.length > 0) {
-            refreshToken = parsedRefresh.refresh;
-          } else if (typeof parsedRefresh.refresh_token === "string" && parsedRefresh.refresh_token.length > 0) {
-            refreshToken = parsedRefresh.refresh_token;
+          } else if (typeof parsed.refresh_token === "string" && parsed.refresh_token.length > 0) {
+            refreshToken = parsed.refresh_token;
+            hasRefreshToken = true;
           }
         } catch {}
         const isExpired = expiresAt !== undefined ? Date.now() >= expiresAt : false;
@@ -318,8 +310,11 @@ export function removeStoredAccount(
 
       for (const row of rows) {
         const idMatch = String(row.id) === target;
-        const email = row.identity_key?.toLowerCase() || "";
-        const emailMatch = email.includes(target);
+        const identity = row.identity_key?.toLowerCase() || "";
+        const email = identity.startsWith("email:") ? identity.slice("email:".length) : "";
+        // Exact match only: substring targeting with --hard permanently deleted
+        // unintended accounts ("ice@x.com" matched "malice@x.com" too).
+        const emailMatch = email === target;
 
         if (idMatch || emailMatch) {
           if (hard) {
@@ -343,7 +338,11 @@ export function removeStoredAccount(
   }
 
   if (affected === 0) {
-    return { success: false, affected: 0, message: `No Antigravity account matched "${identifier}".` };
+    return {
+      success: false,
+      affected: 0,
+      message: `No Antigravity account matched "${identifier}" exactly. Use '/agy accounts' to list exact emails and IDs.`,
+    };
   }
 
   const actionStr = hard ? "permanently deleted" : "deactivated (soft-deleted)";

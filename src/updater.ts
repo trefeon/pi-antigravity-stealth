@@ -16,6 +16,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -528,20 +529,46 @@ async function upgradeScriptInstall(
       return `Release archive version (${String(pkg.version)}) is older than ${expectedVersion}`;
     }
 
-    for (const relFile of RELEASE_FILES) {
-      const srcFile = join(extractedRoot, relFile);
-      if (existsSync(srcFile)) {
-        cpSync(srcFile, join(install.root, relFile), { force: true });
+    // Back up every existing target first so a failure mid-copy (file lock, disk
+    // full) can roll the install back instead of leaving a mixed-version state.
+    const backupDir = join(install.root, `.pi-ag-rollback-${nowMs}`);
+    mkdirSync(backupDir, { recursive: true });
+    for (const rel of [...RELEASE_FILES, ...RELEASE_DIRS]) {
+      if (existsSync(join(install.root, rel))) {
+        cpSync(join(install.root, rel), join(backupDir, rel), { recursive: true, force: true });
       }
     }
 
-    for (const relDir of RELEASE_DIRS) {
-      const srcDir = join(extractedRoot, relDir);
-      const destDir = join(install.root, relDir);
-      if (existsSync(srcDir)) {
-        rmSync(destDir, { recursive: true, force: true });
-        cpSync(srcDir, destDir, { recursive: true, force: true });
+    try {
+      for (const relFile of RELEASE_FILES) {
+        const srcFile = join(extractedRoot, relFile);
+        if (existsSync(srcFile)) {
+          cpSync(srcFile, join(install.root, relFile), { force: true });
+        }
       }
+
+      for (const relDir of RELEASE_DIRS) {
+        const srcDir = join(extractedRoot, relDir);
+        const destDir = join(install.root, relDir);
+        if (existsSync(srcDir)) {
+          rmSync(destDir, { recursive: true, force: true });
+          cpSync(srcDir, destDir, { recursive: true, force: true });
+        }
+      }
+    } catch (err) {
+      for (const rel of [...RELEASE_FILES, ...RELEASE_DIRS]) {
+        try {
+          rmSync(join(install.root, rel), { recursive: true, force: true });
+        } catch {}
+        if (existsSync(join(backupDir, rel))) {
+          cpSync(join(backupDir, rel), join(install.root, rel), { recursive: true, force: true });
+        }
+      }
+      return `Self-update copy failed; install rolled back to previous state (${
+        err instanceof Error ? err.message : String(err)
+      })`;
+    } finally {
+      rmSync(backupDir, { recursive: true, force: true });
     }
 
     let previousMeta: Record<string, unknown> = {};
@@ -580,14 +607,26 @@ function acquireLock(statePath: string): string | null {
     mkdirSync(dirname(lockPath), { recursive: true, mode: 0o700 });
     closeSync(openSync(lockPath, "wx", 0o600));
     return lockPath;
-  } catch {
+  } catch {}
+
+  // Stale reclaim: rename the old lock aside instead of unlinking it, and put it
+  // back if it turns out to be still fresh. Reclaiming by unlink could delete a
+  // racer's just-created lock and yield two concurrent holders.
+  try {
+    const stalePath = `${lockPath}.stale-${process.pid}-${Date.now()}`;
+    renameSync(lockPath, stalePath);
+    if (Date.now() - statSync(stalePath).mtimeMs <= LOCK_STALE_MS) {
+      try {
+        renameSync(stalePath, lockPath);
+      } catch {}
+      return null;
+    }
     try {
-      if (Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS) {
-        unlinkSync(lockPath);
-        closeSync(openSync(lockPath, "wx", 0o600));
-        return lockPath;
-      }
+      unlinkSync(stalePath);
     } catch {}
+    closeSync(openSync(lockPath, "wx", 0o600));
+    return lockPath;
+  } catch {
     return null;
   }
 }

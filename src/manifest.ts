@@ -67,10 +67,13 @@ export async function getLiveHubVersion(timeoutMs = 4000): Promise<VersionInfo> 
     }
   } catch {}
 
+  // Cache the failure too: without a lastFetchTime bump, every caller retries the
+  // (potentially blocked) manifest fetch and pays the full timeout each time.
   cachedVersion = {
     version: process.env.PI_AI_ANTIGRAVITY_VERSION || FALLBACK_VERSION,
     changelist: process.env.PI_AI_ANTIGRAVITY_CL || FALLBACK_CL,
   };
+  lastFetchTime = now;
   return cachedVersion;
 }
 

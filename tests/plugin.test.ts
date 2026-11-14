@@ -7,6 +7,7 @@ import antigravityPlugin, {
 } from "../src/index.ts";
 import { buildHubUserAgent, getLiveHubVersion } from "../src/manifest.ts";
 import {
+  escapeHtml,
   getEffectiveClientId,
   getEffectiveClientSecret,
   loadAntigravityEnvFiles,
@@ -23,12 +24,13 @@ import {
   revertOmpPatch,
 } from "../src/omp-patch.ts";
 import { applyUpstreamSync } from "../scripts/check-upstream-drift.ts";
-import { DEFAULT_CLIENT_ID, DEFAULT_CLIENT_SECRET, FALLBACK_PROJECT_ID } from "../src/constants.ts";
+import { FALLBACK_PROJECT_ID } from "../src/constants.ts";
 import { type AntigravityUsageProvider, sanitizeAntigravityUsageReport } from "../src/usage.ts";
 import {
   listStoredAccounts,
   maskEmail,
   removeStoredAccount,
+  saveAccountToAgentDb,
 } from "../src/accounts.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -110,8 +112,8 @@ describe("pi-antigravity-stealth Plugin", () => {
         delete process.env.ANTIGRAVITY_CLIENT_SECRET;
       }
     }
-    expect(getEffectiveClientId()).toBe(DEFAULT_CLIENT_ID);
-    expect(getEffectiveClientSecret()).toBe(DEFAULT_CLIENT_SECRET);
+    expect(getEffectiveClientId()).toBe("");
+    expect(getEffectiveClientSecret()).toBe("");
   });
 
   it("formats structured apiKey JSON preserving accountId and OMP built-in fields", () => {
@@ -674,6 +676,47 @@ describe("pi-antigravity-stealth Plugin", () => {
       expect(fs.readFileSync(path.join(tmp, "README.md"), "utf8")).toContain("antigravity/hub/2.32.0");
     } finally {
       safeRm(tmp);
+    }
+  });
+
+  it("escapes OAuth error output before reflecting it into callback HTML", () => {
+    expect(escapeHtml('<script>alert("x")</script>')).toBe(
+      "&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;"
+    );
+    expect(escapeHtml("a&b'c")).toBe("a&amp;b&#39;c");
+  });
+
+  it("removes accounts only on exact id or exact email match", () => {
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-remove-"));
+    const prevUserProfile = process.env.USERPROFILE;
+    const prevHome = process.env.HOME;
+    try {
+      fs.mkdirSync(path.join(tmpHome, ".omp", "agent"), { recursive: true });
+      process.env.USERPROFILE = tmpHome;
+      process.env.HOME = tmpHome;
+
+      expect(saveAccountToAgentDb({ access_token: "t1", refresh_token: "r1", email: "alice@x.com", projectId: "p" })).toBe(true);
+      expect(saveAccountToAgentDb({ access_token: "t2", refresh_token: "r2", email: "malice@x.com", projectId: "p" })).toBe(true);
+      expect(listStoredAccounts()).toHaveLength(2);
+
+      // Substring of both emails must not delete either account
+      const partial = removeStoredAccount("ice@x.com", true);
+      expect(partial.success).toBe(false);
+      expect(partial.affected).toBe(0);
+      expect(listStoredAccounts()).toHaveLength(2);
+
+      // Exact email (case-insensitive) deletes exactly one account
+      const exact = removeStoredAccount("Alice@X.com", true);
+      expect(exact.success).toBe(true);
+      expect(exact.affected).toBe(1);
+      const remaining = listStoredAccounts().map((a) => a.email);
+      expect(remaining).toEqual(["malice@x.com"]);
+    } finally {
+      if (prevUserProfile !== undefined) process.env.USERPROFILE = prevUserProfile;
+      else delete process.env.USERPROFILE;
+      if (prevHome !== undefined) process.env.HOME = prevHome;
+      else delete process.env.HOME;
+      safeRm(tmpHome);
     }
   });
 });

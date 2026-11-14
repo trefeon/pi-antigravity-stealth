@@ -16,8 +16,6 @@ import {
   ANTIGRAVITY_SCOPES,
   CALLBACK_PATH,
   CALLBACK_PORT,
-  DEFAULT_CLIENT_ID,
-  DEFAULT_CLIENT_SECRET,
   FALLBACK_PROJECT_ID,
   OAUTH_AUTH_URL,
   OAUTH_TOKEN_URL,
@@ -79,12 +77,21 @@ export function parseOAuthCallbackInput(rawInput: string, expectedState: string)
   return { code: trimmed };
 }
 
+export function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 export function getEffectiveClientId(): string {
-  return process.env.ANTIGRAVITY_CLIENT_ID?.trim() || DEFAULT_CLIENT_ID;
+  return process.env.ANTIGRAVITY_CLIENT_ID?.trim() || "";
 }
 
 export function getEffectiveClientSecret(): string {
-  return process.env.ANTIGRAVITY_CLIENT_SECRET?.trim() || DEFAULT_CLIENT_SECRET;
+  return process.env.ANTIGRAVITY_CLIENT_SECRET?.trim() || "";
 }
 
 export function hasCustomOAuthClient(): boolean {
@@ -335,7 +342,7 @@ export async function loginWithBrowser(
 
       if (error) {
         res.writeHead(400, { "Content-Type": "text/html" });
-        res.end(`<h3>Authentication Failed</h3><p>${error}</p>`);
+        res.end(`<h3>Authentication Failed</h3><p>${escapeHtml(error)}</p>`);
         fail(new Error(`OAuth error: ${error}`));
         return;
       }
