@@ -41,7 +41,9 @@ import {
 import { auditHubSignature } from "../src/audit.ts";
 import {
   extractAgyOAuthCandidates,
+  installAgyCli,
   pairAgyOAuthClient,
+  pluginOwnedAgyBinaryPath,
   readAgyClientCache,
   resolveAgyOAuthPair,
   writeAgyClientCache,
@@ -50,6 +52,7 @@ import { isUsingAgyClientOAuth, resolveOAuthClientCredentials, resolveRedirectUr
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import * as nodeCrypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   checkForUpdate,
@@ -1009,6 +1012,81 @@ describe("pi-antigravity-stealth Plugin", () => {
       expect(r4?.pair.clientSecret).toBe(v2.sec);
     } finally {
       safeRm(tmp);
+    }
+  });
+
+  it("installs the official agy CLI from a release manifest with sha512 verification", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-install-"));
+    try {
+      const home = path.join(tmp, "home");
+      process.env.USERPROFILE = home;
+      process.env.HOME = home;
+
+      const blob = Buffer.from("B".repeat(2_000_000));
+      const sha512 = nodeCrypto.createHash("sha512").update(blob).digest("hex");
+      const manifest = { version: "9.9.9", url: "https://storage.googleapis.com/fake/cli_windows_x64.exe", sha512 };
+      const progress: string[] = [];
+      const fakeFetch = (async (url: string | URL) => {
+        if (String(url).endsWith("windows_amd64.json")) {
+          return new Response(JSON.stringify(manifest), { status: 200 });
+        }
+        return new Response(blob, { status: 200 });
+      }) as unknown as typeof fetch;
+
+      // Bare .exe artifact (Windows shape) — download + verify + place.
+      const r1 = await installAgyCli({ platform: "win32", customFetch: fakeFetch, onProgress: (m) => progress.push(m) });
+      expect(r1.status).toBe("installed");
+      expect(r1.version).toBe("9.9.9");
+      const dest = pluginOwnedAgyBinaryPath("win32");
+      expect(fs.existsSync(dest)).toBe(true);
+      expect(fs.statSync(dest).size).toBe(blob.length);
+
+      // Second call without force → already-current.
+      const r2 = await installAgyCli({ platform: "win32", customFetch: fakeFetch });
+      expect(r2.status).toBe("already-current");
+
+      // Corrupt artifact → sha mismatch, nothing installed over the good file.
+      const badManifest = { ...manifest, sha512: "0".repeat(128) };
+      const badFetch = (async (url: string | URL) => {
+        if (String(url).endsWith("windows_amd64.json")) {
+          return new Response(JSON.stringify(badManifest), { status: 200 });
+        }
+        return new Response(blob, { status: 200 });
+      }) as unknown as typeof fetch;
+      const r3 = await installAgyCli({ platform: "win32", customFetch: badFetch, force: true });
+      expect(r3.status).toBe("failed");
+      expect(r3.error).toContain("SHA-512 mismatch");
+      expect(fs.readFileSync(dest).length).toBe(blob.length); // good copy untouched
+
+      // tar.gz artifact (Linux shape): build a real tar fixture with system tar.
+      const innerName = process.platform === "win32" ? "antigravity.exe" : "antigravity";
+      const innerPath = path.join(tmp, "pkg", innerName);
+      fs.mkdirSync(path.dirname(innerPath), { recursive: true });
+      fs.writeFileSync(innerPath, "C".repeat(2_000_000));
+      const tarPath = path.join(tmp, "cli.tar.gz");
+      const tar = spawnSync("tar", ["-czf", tarPath, "-C", path.dirname(innerPath), innerName]);
+      if (tar.status === 0) {
+        const tarBytes = fs.readFileSync(tarPath);
+        const tarSha = nodeCrypto.createHash("sha512").update(tarBytes).digest("hex");
+        const linuxManifest = { version: "9.9.9", url: "https://storage.googleapis.com/fake/cli_linux_x64.tar.gz", sha512: tarSha };
+        const tarFetch = (async (url: string | URL) => {
+          if (String(url).endsWith("linux_amd64.json")) {
+            return new Response(JSON.stringify(linuxManifest), { status: 200 });
+          }
+          return new Response(tarBytes, { status: 200 });
+        }) as unknown as typeof fetch;
+        const r4 = await installAgyCli({ platform: "linux", customFetch: tarFetch });
+        expect(r4.status).toBe("installed");
+        const linuxDest = pluginOwnedAgyBinaryPath("linux");
+        expect(fs.existsSync(linuxDest)).toBe(true);
+        expect(fs.statSync(linuxDest).size).toBe(2_000_000);
+      }
+    } finally {
+      safeRm(tmp);
+      const prevHome = process.env.HOME;
+      delete process.env.USERPROFILE;
+      if (prevHome !== undefined) process.env.HOME = prevHome;
+      else delete process.env.HOME;
     }
   });
 });

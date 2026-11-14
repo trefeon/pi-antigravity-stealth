@@ -84,6 +84,7 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommandDef[] = [
   { name: "accounts", description: "List saved Antigravity accounts in agent.db" },
   { name: "check", usage: "[--no-quarantine]", description: "Probe live inference health and auto-remove banned 403 accounts" },
   { name: "appeal", description: "Open the Google appeal form for ToS-suspended accounts" },
+  { name: "install-cli", usage: "[--force]", description: "Download and install the official agy CLI for first-party OAuth" },
   { name: "usage", usage: "[email|id]", takesArgs: true, description: "Show live 5h/weekly quota % per pool" },
   { name: "tier", usage: "[email|id]", takesArgs: true, description: "Probe account tier and Hydrogen entitlement" },
   { name: "login", usage: "[--paste]", description: "Authenticate a Google account (--paste for headless SSH)" },
@@ -533,6 +534,48 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
             );
           }
           notify(lines.join("\n"), report.quarantined > 0 ? "warning" : "info");
+          return;
+        }
+
+        if (subcmd === "install-cli") {
+          const force = parts.includes("--force");
+          const { installAgyCli, fetchLatestAgyCliRelease, defaultAgyBinaryPath, fingerprintPair, readAgyClientCache, defaultAgyCachePath, pluginOwnedAgyBinaryPath } = await import("./agy-client.ts");
+          const release = await fetchLatestAgyCliRelease();
+          const existing = defaultAgyBinaryPath();
+          const lines = [
+            `agy CLI installer:`,
+            `  User-managed binary: ${existing ?? "not found"}`,
+            `  Plugin-owned path: ${pluginOwnedAgyBinaryPath()}`,
+            `  Latest release: ${release ? `v${release.version}` : "manifest unreachable"}`,
+          ];
+          if (!release) {
+            lines.push("  Cannot install without the release manifest.");
+            notify(lines.join("\n"), "warning");
+            return;
+          }
+          notify(lines.join("\n"));
+          const result = await installAgyCli({
+            force,
+            onProgress: (m) => notify(`  [agy] ${m}`),
+          });
+          if (result.status === "failed") {
+            notify(`agy CLI install failed: ${result.error}`, "error");
+            return;
+          }
+          // Fresh pair immediately after install.
+          try {
+            await ensureAgyOAuthClientCached();
+          } catch {}
+          const cached = readAgyClientCache(defaultAgyCachePath());
+          notify(
+            [
+              result.status === "installed"
+                ? `✅ Installed agy CLI v${result.version} → ${result.path}`
+                : `✅ agy CLI v${result.version} already current → ${result.path}`,
+              cached ? `First-party OAuth pair: ready (${fingerprintPair(cached)})` : "Pair extraction will run on next use.",
+              `Logins from this host now use the official agy client.`,
+            ].join("\n")
+          );
           return;
         }
 

@@ -58,3 +58,11 @@ export const PUBLIC_SHARED_OAUTH_CLIENT_ID_PREFIX = "1071006060591-";
 
 /** Redirect path used by the official `agy` CLI (`http://localhost:<port>/auth/callback`). */
 export const AGY_CALLBACK_PATH = "/auth/callback";
+
+/**
+ * Official agy CLI auto-updater manifest base. Per-platform manifests
+ * (`windows_amd64`, `linux_amd64`, `linux_arm64`, `darwin_arm64`) carry
+ * {version, url, sha512} for the latest release artifact.
+ */
+export const AGY_CLI_MANIFEST_BASE =
+  "https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests";

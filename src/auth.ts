@@ -26,6 +26,7 @@ import {
 import { buildHubUserAgent } from "./manifest.ts";
 import { getBuiltinAntigravityClientCredentials } from "./omp-builtin.ts";
 import {
+  defaultAgyBinaryPath,
   defaultAgyCachePath,
   invalidateAgyClientCache,
   readAgyClientCache,
@@ -231,6 +232,22 @@ export async function loginWithBrowser(
       : callbacksOrProgress ?? {};
 
   try {
+    // Auto-install the official agy CLI when no first-party OAuth pair can be
+    // resolved on this host (no binary, no cache, no custom env): login is the
+    // natural consent point — the operator asked to sign in, so fetching the
+    // official client that makes that sign-in 1:1 is in-scope. Disable with
+    // ANTIGRAVITY_SKIP_CLI_INSTALL=1.
+    if (!hasCustomOAuthClient() && !process.env.ANTIGRAVITY_SKIP_CLI_INSTALL) {
+      const cached = readAgyClientCache(defaultAgyCachePath());
+      if (!cached && !defaultAgyBinaryPath()) {
+        callbacks.onProgress?.("No first-party OAuth client available — installing the official agy CLI...");
+        const { installAgyCli } = await import("./agy-client.ts");
+        const result = await installAgyCli({ onProgress: (m) => callbacks.onProgress?.(m) });
+        if (result.status === "failed") {
+          callbacks.onProgress?.(`agy CLI install skipped: ${result.error}`);
+        }
+      }
+    }
     await ensureAgyOAuthClientCached();
   } catch {}
   const { clientId, clientSecret } = resolveOAuthClientCredentials();
