@@ -291,7 +291,13 @@ export function formatStructuredApiKey(credentials: Record<string, unknown>): st
 }
 
 async function runUnifiedLogin(callbacks: Record<string, unknown>): Promise<Record<string, unknown>> {
-  if (hasCustomOAuthClient()) {
+  // The stealth flow (loginWithBrowser) is preferred in every case: it uses
+  // the first-party agy CLI OAuth pair by default (env overrides respected)
+  // with the CLI-exact loopback redirect, and binds oauthClientId into the
+  // stored credential. OMP's builtin login always mints under the legacy
+  // shared client Google's enforcement sweeps fingerprint, so it is only a
+  // last-resort fallback when no client credentials resolve at all.
+  try {
     const creds = await loginWithBrowser(callbacks);
     return {
       access: creds.access_token,
@@ -302,25 +308,15 @@ async function runUnifiedLogin(callbacks: Record<string, unknown>): Promise<Reco
       expiresAt: creds.expires_at,
       projectId: creds.projectId,
       email: creds.email,
+      ...(creds.oauthClientId ? { oauthClientId: creds.oauthClientId } : {}),
     };
+  } catch (err) {
+    const builtin = await getBuiltinAntigravityDefinition();
+    if (builtin?.login) {
+      return builtin.login(callbacks);
+    }
+    throw err;
   }
-
-  const builtin = await getBuiltinAntigravityDefinition();
-  if (builtin?.login) {
-    return builtin.login(callbacks);
-  }
-
-  const creds = await loginWithBrowser(callbacks);
-  return {
-    access: creds.access_token,
-    accessToken: creds.access_token,
-    refresh: creds.refresh_token,
-    refreshToken: creds.refresh_token,
-    expires: creds.expires_at,
-    expiresAt: creds.expires_at,
-    projectId: creds.projectId,
-    email: creds.email,
-  };
 }
 
 async function runUnifiedRefresh(credentials: unknown, signal?: AbortSignal): Promise<Record<string, unknown>> {
