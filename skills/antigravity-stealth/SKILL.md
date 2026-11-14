@@ -47,3 +47,9 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
    - Google binds refresh tokens to the client that minted them: a token minted by the legacy shared client answers `401 unauthorized_client` under the agy client, and vice versa (verified live).
    - Every credential row records `oauthClientId` (the minting client) in `agent.db`; refreshes try the bound client first and fall back through the known pairs, re-recording whichever worked.
    - Accounts logged in before the agy-pair default keep working via the fallback, but `/agy accounts` flags them with `re-login recommended (shared-client token)` until re-logged: run `/agy login`, sign in with that account, and the new refresh token binds to the first-party agy client.
+8. **Cross-Platform / Linux Notes (verified 2026-11-14):**
+   - Binary discovery per platform: Windows `%LOCALAPPDATA%\agy\bin\agy.exe`, Linux `~/.local/bin/antigravity|agy` (PATH scan included), plus `AGY_BINARY_PATH` override. The Linux tarball ships the binary as `antigravity`.
+   - The OAuth pair is byte-identical across official builds: Windows x64, Linux x64, Linux arm64 all extract to the same pair (fingerprint `sha256:df2a8bbc10d9` at agy 1.5.9); `bun install` + full suite passes on x86_64 (Ubuntu 24.04) and aarch64 (Armbian).
+   - npm-global OMP installs can miss the exec bit on `dist/cli.js` (`env: 'omp': Permission denied`) — fix with `chmod +x ~/.npm-global/lib/node_modules/@oh-my-pi/pi-coding-agent/dist/cli.js`.
+   - Under Node (no Bun), `node:sqlite` needs `--experimental-sqlite` on 22.x; Node 22 also rejects an explicitly-undefined `DatabaseSync` options argument (handled by the plugin's `openSqlite` adapter).
+   - OMP's `dist/cli.js` is Bun-runtime-only (`Bun.spawn`/`Bun.env`): glibc-2.17 hosts (old OpenVZ kernels) cannot run OMP; the plugin code itself still runs there under Node 22 (unofficial `glibc-217` build) with the `node:sqlite` layer.
