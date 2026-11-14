@@ -72,6 +72,8 @@ export interface StoredAntigravityAccount {
   dbPath: string;
   token?: string;
   refreshToken?: string;
+  /** OAuth client that minted the stored refresh token (client-bound refresh). */
+  oauthClientId?: string;
 }
 
 export interface SaveAccountInput {
@@ -80,6 +82,8 @@ export interface SaveAccountInput {
   expires_at?: number;
   projectId?: string;
   email?: string;
+  /** OAuth client that minted the refresh token (client-bound refresh). */
+  oauthClientId?: string;
 }
 
 export function findAgentDbPaths(): string[] {
@@ -128,6 +132,7 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
         let token: string | undefined;
         let hasRefreshToken = false;
         let refreshToken: string | undefined;
+        let oauthClientId: string | undefined;
 
         if (row.identity_key?.startsWith("email:")) {
           email = row.identity_key.slice(6);
@@ -137,6 +142,11 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
           const parsed = JSON.parse(row.data) as Record<string, unknown>;
           if (!email && typeof parsed.email === "string") {
             email = parsed.email;
+          }
+          if (typeof parsed.oauthClientId === "string" && parsed.oauthClientId.length > 0) {
+            oauthClientId = parsed.oauthClientId;
+          } else if (typeof parsed.oauth_client_id === "string" && parsed.oauth_client_id.length > 0) {
+            oauthClientId = parsed.oauth_client_id;
           }
           if (typeof parsed.projectId === "string") {
             projectId = parsed.projectId;
@@ -172,6 +182,7 @@ export function listStoredAccounts(): StoredAntigravityAccount[] {
           dbPath,
           token,
           refreshToken,
+          oauthClientId,
         });
       }
       db.close();
@@ -215,6 +226,7 @@ export function saveAccountToAgentDb(creds: SaveAccountInput): boolean {
     email: creds.email,
     projectId: creds.projectId || FALLBACK_PROJECT_ID,
     authorizedAt: Date.now(),
+    ...(creds.oauthClientId ? { oauthClientId: creds.oauthClientId } : {}),
   });
 
   let savedAny = false;
@@ -243,6 +255,56 @@ export function saveAccountToAgentDb(creds: SaveAccountInput): boolean {
   }
 
   return savedAny;
+}
+
+/**
+ * Records which OAuth client minted a credential's refresh token
+ * (`oauthClientId` inside the row's data JSON). Refresh tokens are bound to
+ * their issuing client, so refresh paths need this binding hint.
+ */
+export function recordCredentialClient(
+  identifier: { email?: string; refreshToken?: string },
+  clientId: string
+): boolean {
+  if (!identifier.email && !identifier.refreshToken) return false;
+
+  const dbPaths = findAgentDbPaths();
+  let updated = false;
+
+  for (const dbPath of dbPaths) {
+    try {
+      const db = openSqlite(dbPath, false);
+      if (!db) continue;
+      const rows = db
+        .query(
+          "SELECT id, identity_key, data FROM auth_credentials WHERE provider = 'google-antigravity'"
+        )
+        .all() as Array<{ id: number; identity_key: string | null; data: string }>;
+
+      for (const row of rows) {
+        const rowEmail = row.identity_key?.startsWith("email:")
+          ? row.identity_key.slice("email:".length).toLowerCase()
+          : "";
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = JSON.parse(row.data) as Record<string, unknown>;
+        } catch {}
+        const rowRefresh =
+          typeof parsed.refresh === "string" ? parsed.refresh : typeof parsed.refresh_token === "string" ? parsed.refresh_token : "";
+
+        const emailMatch = Boolean(identifier.email && rowEmail && rowEmail === identifier.email.toLowerCase());
+        const refreshMatch = Boolean(identifier.refreshToken && rowRefresh && rowRefresh === identifier.refreshToken);
+        if (!emailMatch && !refreshMatch) continue;
+
+        const next = { ...parsed, oauthClientId: clientId };
+        db.query("UPDATE auth_credentials SET data = ? WHERE id = ?").run(JSON.stringify(next), row.id);
+        updated = true;
+      }
+      db.close();
+    } catch {}
+  }
+
+  return updated;
 }
 
 export function restoreAllStoredAccounts(): {

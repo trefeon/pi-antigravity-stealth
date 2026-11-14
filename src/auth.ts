@@ -25,7 +25,12 @@ import {
 } from "./constants.ts";
 import { buildHubUserAgent } from "./manifest.ts";
 import { getBuiltinAntigravityClientCredentials } from "./omp-builtin.ts";
-import { defaultAgyCachePath, readAgyClientCache, resolveAgyOAuthPair } from "./agy-client.ts";
+import {
+  defaultAgyCachePath,
+  readAgyClientCache,
+  resolveAgyOAuthPair,
+} from "./agy-client.ts";
+import { recordCredentialClient } from "./accounts.ts";
 
 export interface AntigravityCredentials {
   access_token: string;
@@ -35,6 +40,8 @@ export interface AntigravityCredentials {
   projectId?: string;
   email?: string;
   accountId?: string;
+  /** OAuth client that minted the refresh token (client-bound refresh). */
+  oauthClientId?: string;
 }
 
 export interface BrowserLoginCallbacks {
@@ -380,6 +387,7 @@ export async function loginWithBrowser(
         expires_at: Date.now() + expiresIn * 1000 - 300000,
         projectId,
         email,
+        oauthClientId: clientId,
       });
     } catch (err) {
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -480,53 +488,111 @@ export async function loginWithBrowser(
 export async function refreshAccessToken(
   refreshToken: string,
   existingProjectId?: string,
-  options?: { email?: string; accountId?: string; signal?: AbortSignal }
+  options?: {
+    email?: string;
+    accountId?: string;
+    signal?: AbortSignal;
+    /** Client that minted this refresh token (binding hint); tried first. */
+    clientId?: string;
+  }
 ): Promise<AntigravityCredentials> {
-  const { clientId, clientSecret } = resolveOAuthClientCredentials();
-  if (!clientId || !clientSecret) {
-    throw new Error(
-      "Google Antigravity OAuth client credentials are unavailable for token refresh."
-    );
-  }
-  const userAgent = await buildHubUserAgent();
-
-  const params = new URLSearchParams({
-    client_id: clientId,
-    client_secret: clientSecret,
-    grant_type: "refresh_token",
-    refresh_token: refreshToken,
-  });
-
-  const res = await fetch(OAUTH_TOKEN_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "User-Agent": userAgent,
-      Accept: "application/json",
-    },
-    body: params.toString(),
-    signal: options?.signal,
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Token refresh failed (${res.status}): ${errText}`);
-  }
-
-  const tokenData = (await res.json()) as Record<string, unknown>;
-  const accessToken = typeof tokenData.access_token === "string" ? tokenData.access_token : "";
-  const newRefreshToken = typeof tokenData.refresh_token === "string" ? tokenData.refresh_token : refreshToken;
-  const expiresIn = typeof tokenData.expires_in === "number" ? tokenData.expires_in : 3600;
-
-  return {
-    access_token: accessToken,
-    refresh_token: newRefreshToken,
-    expires_in: expiresIn,
-    expires_at: Date.now() + expiresIn * 1000 - 300000,
-    projectId: existingProjectId || FALLBACK_PROJECT_ID,
-    ...(options?.email ? { email: options.email } : {}),
-    ...(options?.accountId ? { accountId: options.accountId } : {}),
+  // Refresh tokens are bound to their issuing client (verified live: a token
+  // minted by the shared client answers `unauthorized_client` under the agy
+  // client and vice versa). Try the bound hint first, then the resolved
+  // client, then the legacy builtin pair, then the agy pair — and remember
+  // which one minted the credential.
+  const secretByClient = new Map<string, string>();
+  const registerClient = (clientId?: string, clientSecret?: string) => {
+    if (clientId && clientSecret && !secretByClient.has(clientId)) {
+      secretByClient.set(clientId, clientSecret);
+    }
   };
+
+  const resolved = resolveOAuthClientCredentials();
+  registerClient(resolved.clientId, resolved.clientSecret);
+  const builtin = getBuiltinAntigravityClientCredentials();
+  registerClient(builtin?.clientId, builtin?.clientSecret);
+  const cachedAgy = readAgyClientCache(defaultAgyCachePath());
+  registerClient(cachedAgy?.clientId, cachedAgy?.clientSecret);
+
+  if (secretByClient.size === 0) {
+    throw new Error("Google Antigravity OAuth client credentials are unavailable for token refresh.");
+  }
+
+  // Bound hint first (when resolvable), then everything else in stealth order.
+  const ordered: Array<{ clientId: string; clientSecret: string }> = [];
+  if (options?.clientId && secretByClient.has(options.clientId)) {
+    ordered.push({ clientId: options.clientId, clientSecret: secretByClient.get(options.clientId)! });
+  }
+  for (const [clientId, clientSecret] of secretByClient) {
+    if (!ordered.some((c) => c.clientId === clientId)) {
+      ordered.push({ clientId, clientSecret });
+    }
+  }
+  const candidates = ordered;
+
+  const userAgent = await buildHubUserAgent();
+  let lastError = "";
+
+  for (const candidate of candidates) {
+    const params = new URLSearchParams({
+      client_id: candidate.clientId,
+      client_secret: candidate.clientSecret,
+      grant_type: "refresh_token",
+      refresh_token: refreshToken,
+    });
+
+    let res: Response;
+    try {
+      res = await fetch(OAUTH_TOKEN_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "User-Agent": userAgent,
+          Accept: "application/json",
+        },
+        body: params.toString(),
+        signal: options?.signal,
+      });
+    } catch (err) {
+      throw err;
+    }
+
+    if (!res.ok) {
+      const errText = await res.text();
+      lastError = `(${candidate.clientId.slice(0, 16)}…) ${res.status}: ${errText.slice(0, 200)}`;
+      // Client-bound mismatch surfaces as 400/401 invalid_client /
+      // unauthorized_client / invalid_grant — try the next candidate.
+      if (res.status === 400 || res.status === 401) continue;
+      throw new Error(`Token refresh failed (${res.status}): ${errText}`);
+    }
+
+    const tokenData = (await res.json()) as Record<string, unknown>;
+    const accessToken = typeof tokenData.access_token === "string" ? tokenData.access_token : "";
+    const newRefreshToken = typeof tokenData.refresh_token === "string" ? tokenData.refresh_token : refreshToken;
+    const expiresIn = typeof tokenData.expires_in === "number" ? tokenData.expires_in : 3600;
+
+    // Persist the client binding so the next refresh starts with the right pair.
+    try {
+      recordCredentialClient(
+        { email: options?.email, refreshToken: refreshToken },
+        candidate.clientId
+      );
+    } catch {}
+
+    return {
+      access_token: accessToken,
+      refresh_token: newRefreshToken,
+      expires_in: expiresIn,
+      expires_at: Date.now() + expiresIn * 1000 - 300000,
+      projectId: existingProjectId || FALLBACK_PROJECT_ID,
+      oauthClientId: candidate.clientId,
+      ...(options?.email ? { email: options.email } : {}),
+      ...(options?.accountId ? { accountId: options.accountId } : {}),
+    };
+  }
+
+  throw new Error(`Token refresh failed for all known OAuth clients. Last error: ${lastError}`);
 }
 
 export function resolveBrowserLaunch(

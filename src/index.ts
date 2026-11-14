@@ -32,7 +32,7 @@ import {
 } from "./omp-patch.ts";
 import { createAntigravityUsageProvider } from "./usage.ts";
 import { auditHubSignature, formatWireAudit } from "./audit.ts";
-import { APPEAL_FORM_URL } from "./constants.ts";
+import { APPEAL_FORM_URL, PUBLIC_SHARED_OAUTH_CLIENT_ID_PREFIX } from "./constants.ts";
 import {
   auditAndQuarantineAccounts,
   findAgentDbPaths,
@@ -262,8 +262,14 @@ export function extractCredentials(c: Record<string, unknown>) {
   const accountId = typeof c.accountId === "string" && c.accountId.length > 0 ? c.accountId : undefined;
   const apiEndpoint = typeof c.apiEndpoint === "string" && c.apiEndpoint.length > 0 ? c.apiEndpoint : undefined;
   const enterpriseUrl = typeof c.enterpriseUrl === "string" && c.enterpriseUrl.length > 0 ? c.enterpriseUrl : undefined;
+  const oauthClientId =
+    typeof c.oauthClientId === "string" && c.oauthClientId.length > 0
+      ? c.oauthClientId
+      : typeof c.oauth_client_id === "string" && c.oauth_client_id.length > 0
+      ? c.oauth_client_id
+      : undefined;
 
-  return { token, projectId, refreshToken, expiresAt, email, accountId, apiEndpoint, enterpriseUrl };
+  return { token, projectId, refreshToken, expiresAt, email, accountId, apiEndpoint, enterpriseUrl, oauthClientId };
 }
 
 export function formatStructuredApiKey(credentials: Record<string, unknown>): string {
@@ -280,6 +286,7 @@ export function formatStructuredApiKey(credentials: Record<string, unknown>): st
     ...(creds.expiresAt !== undefined ? { expiresAt: creds.expiresAt } : {}),
     ...(creds.email !== undefined ? { email: creds.email } : {}),
     ...(creds.accountId !== undefined ? { accountId: creds.accountId } : {}),
+    ...(creds.oauthClientId !== undefined ? { oauthClientId: creds.oauthClientId } : {}),
   });
 }
 
@@ -326,29 +333,54 @@ async function runUnifiedRefresh(credentials: unknown, signal?: AbortSignal): Pr
     return c;
   }
 
-  if (!hasCustomOAuthClient()) {
-    const builtin = await getBuiltinAntigravityDefinition();
-    if (builtin?.refreshToken) {
-      const refreshed = await builtin.refreshToken(c, signal);
-      return {
-        ...c,
-        ...refreshed,
-        projectId:
-          typeof refreshed.projectId === "string" && refreshed.projectId.length > 0
-            ? refreshed.projectId
-            : extracted.projectId,
-        ...(typeof refreshed.email === "string" && refreshed.email.length > 0
-          ? { email: refreshed.email }
-          : extracted.email
-          ? { email: extracted.email }
-          : {}),
-        ...(typeof refreshed.accountId === "string" && refreshed.accountId.length > 0
-          ? { accountId: refreshed.accountId }
-          : extracted.accountId
-          ? { accountId: extracted.accountId }
-          : {}),
-      };
-    }
+  // Tokens minted by a client we track (via the oauthClientId binding written
+  // at login/refresh time) must refresh through the client-bound chain in
+  // auth.ts — a token minted by client A fails under client B with
+  // `unauthorized_client` (verified live). OMP's builtin refresh only knows
+  // its own pair, so it would break agy-minted tokens.
+  if (extracted.oauthClientId || hasCustomOAuthClient()) {
+    const refreshed = await refreshAccessToken(extracted.refreshToken, extracted.projectId, {
+      email: extracted.email,
+      accountId: extracted.accountId,
+      clientId: extracted.oauthClientId,
+      signal,
+    });
+    return {
+      ...c,
+      access: refreshed.access_token,
+      accessToken: refreshed.access_token,
+      refresh: refreshed.refresh_token,
+      refreshToken: refreshed.refresh_token,
+      expires: refreshed.expires_at,
+      expiresAt: refreshed.expires_at,
+      projectId: refreshed.projectId || extracted.projectId,
+      ...(refreshed.email ? { email: refreshed.email } : extracted.email ? { email: extracted.email } : {}),
+      ...(refreshed.accountId ? { accountId: refreshed.accountId } : extracted.accountId ? { accountId: extracted.accountId } : {}),
+      ...(refreshed.oauthClientId ? { oauthClientId: refreshed.oauthClientId } : {}),
+    };
+  }
+
+  const builtin = await getBuiltinAntigravityDefinition();
+  if (builtin?.refreshToken) {
+    const refreshed = await builtin.refreshToken(c, signal);
+    return {
+      ...c,
+      ...refreshed,
+      projectId:
+        typeof refreshed.projectId === "string" && refreshed.projectId.length > 0
+          ? refreshed.projectId
+          : extracted.projectId,
+      ...(typeof refreshed.email === "string" && refreshed.email.length > 0
+        ? { email: refreshed.email }
+        : extracted.email
+        ? { email: extracted.email }
+        : {}),
+      ...(typeof refreshed.accountId === "string" && refreshed.accountId.length > 0
+        ? { accountId: refreshed.accountId }
+        : extracted.accountId
+        ? { accountId: extracted.accountId }
+        : {}),
+    };
   }
 
   const refreshed = await refreshAccessToken(extracted.refreshToken, extracted.projectId, {
@@ -454,8 +486,16 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
             } else if (a.isExpired) {
               status = "[Token Expired - refreshable]";
             }
+            // Refresh tokens are bound to their issuing client: tokens minted
+            // by the legacy shared client only refresh under that client. Flag
+            // them so they get re-logged under the agy (first-party) client.
+            const needsRelogin =
+              !a.disabledCause &&
+              !a.isExpired &&
+              (!a.oauthClientId || a.oauthClientId.startsWith(PUBLIC_SHARED_OAUTH_CLIENT_ID_PREFIX));
+            const reloginTag = needsRelogin ? " · re-login recommended (shared-client token)" : "";
             lines.push(
-              `  • #${a.id} ${maskEmail(a.email || "Unknown")} (Project: ${a.projectId || "default"}) ${status}`
+              `  • #${a.id} ${maskEmail(a.email || "Unknown")} (Project: ${a.projectId || "default"}) ${status}${reloginTag}`
             );
           }
           lines.push(`\nUse '/agy tier <id>' to inspect account subscription tier.`);
@@ -568,6 +608,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
                     expires_at: extracted.expiresAt,
                     projectId,
                     email: a.email,
+                    oauthClientId: extracted.oauthClientId,
                   });
                 }
               } catch {}
@@ -655,6 +696,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
                     expires_at: extracted.expiresAt,
                     projectId: extracted.projectId,
                     email: a.email,
+                    oauthClientId: extracted.oauthClientId,
                   });
                 }
               } catch {}
@@ -722,7 +764,14 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
                   }
                 : {}),
             });
-            const saved = saveAccountToAgentDb(creds);
+            const saved = saveAccountToAgentDb({
+              access_token: creds.access_token,
+              refresh_token: creds.refresh_token,
+              expires_at: creds.expires_at,
+              projectId: creds.projectId,
+              email: creds.email,
+              oauthClientId: creds.oauthClientId,
+            });
             notify(
               saved
                 ? `Successfully authenticated as ${maskEmail(creds.email || "User")}! Credential saved to agent.db.`
@@ -777,6 +826,12 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
                 a.disabledCause.includes("403") ||
                 a.disabledCause.includes("banned"))
           ).length;
+          const reloginAcc = accounts.filter(
+            (a) =>
+              !a.disabledCause &&
+              !a.isExpired &&
+              (!a.oauthClientId || a.oauthClientId.startsWith(PUBLIC_SHARED_OAUTH_CLIENT_ID_PREFIX))
+          ).length;
           const upd = readUpdateState();
           const ua = await buildHubUserAgent();
           const patchInfo = inspectOmpPatchStatus({ verifyFiles: true });
@@ -800,7 +855,7 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
             `Database Paths: ${dbPaths.length > 0 ? dbPaths.join(", ") : "none created yet"}`,
             `Accounts: ${activeAcc} active, ${expiredAcc} expired, ${disabledAcc} disabled${
               tosBannedAcc > 0 ? ` (${tosBannedAcc} ToS quarantined)` : ""
-            }`,
+            }${reloginAcc > 0 ? ` — ${reloginAcc} need re-login under agy client (/agy login)` : ""}`,
             `Hub User-Agent: ${ua}`,
             `Appeal Form: ${APPEAL_FORM_URL}`,
             `Updater Cache: ${
