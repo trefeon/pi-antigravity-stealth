@@ -13,7 +13,6 @@ import {
   loadAntigravityEnvFiles,
   parseOAuthCallbackInput,
   resolveBrowserLaunch,
-  resolveOAuthClientCredentials,
 } from "../src/auth.ts";
 import { findOmpAgentDistDir } from "../src/omp-builtin.ts";
 import {
@@ -28,6 +27,9 @@ import { FALLBACK_PROJECT_ID } from "../src/constants.ts";
 import { type AntigravityUsageProvider, sanitizeAntigravityUsageReport } from "../src/usage.ts";
 import {
   auditAndQuarantineAccounts,
+  buildAntigravityProbeEnvelope,
+  buildControlRequestHeaders,
+  buildInferenceRequestHeaders,
   listStoredAccounts,
   markAccountDisabled,
   maskEmail,
@@ -36,6 +38,14 @@ import {
   removeStoredAccount,
   saveAccountToAgentDb,
 } from "../src/accounts.ts";
+import { auditHubSignature } from "../src/audit.ts";
+import {
+  extractAgyOAuthCandidates,
+  pairAgyOAuthClient,
+  readAgyClientCache,
+  writeAgyClientCache,
+} from "../src/agy-client.ts";
+import { isUsingAgyClientOAuth, resolveOAuthClientCredentials, resolveRedirectUri } from "../src/auth.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -103,6 +113,7 @@ describe("pi-antigravity-stealth Plugin", () => {
       expect(resolveOAuthClientCredentials()).toEqual({
         clientId: "custom-test-client-id.apps.googleusercontent.com",
         clientSecret: "custom-test-secret",
+        source: "env",
       });
     } finally {
       if (originalId !== undefined) {
@@ -829,6 +840,131 @@ describe("pi-antigravity-stealth Plugin", () => {
       if (prevHome !== undefined) process.env.HOME = prevHome;
       else delete process.env.HOME;
       safeRm(tmpHome);
+    }
+  });
+
+  it("builds a 1:1 agy-shaped inference envelope and headers", async () => {
+    const envelope = buildAntigravityProbeEnvelope("proj", "gemini-3.8-flash-high");
+    expect(Object.keys(envelope).sort()).toEqual(
+      ["model", "project", "request", "requestId", "userAgent"].sort()
+    );
+    expect(envelope.userAgent).toBe("antigravity");
+    expect(envelope.requestId).toMatch(/^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/\d+$/);
+    expect(envelope.request.labels.cascade_id).toBe(envelope.request.labels.root_cascade_id);
+    expect(envelope.request.labels.used_non_gemini_model).toBe("false");
+    expect(envelope.request.sessionId).toMatch(/^-?\d+$/);
+
+    const h1 = await buildInferenceRequestHeaders("tok");
+    const lower = Object.fromEntries(Object.entries(h1).map(([k, v]) => [k.toLowerCase(), v]));
+    expect(lower["accept"]).toBe("text/event-stream");
+    expect(lower["accept-encoding"]).toBe("gzip");
+    expect(lower["content-type"]).toBe("application/json");
+    expect(lower["user-agent"]).toMatch(/^antigravity\/hub\/\d+\.\d+\.\d+ \(aidev_client; /);
+    expect(lower["x-cloudaicompanion-trace-id"]).toMatch(/^[0-9a-f-]{36}$/);
+    // Forbidden third-party fingerprints must never appear on inference.
+    expect(lower["x-goog-api-client"]).toBeUndefined();
+    expect(lower["client-metadata"]).toBeUndefined();
+
+    const h2 = await buildInferenceRequestHeaders("tok");
+    expect(h2["x-cloudaicompanion-trace-id"]).not.toBe(h1["x-cloudaicompanion-trace-id"]);
+
+    const c = await buildControlRequestHeaders("tok");
+    expect(c["Accept-Encoding"]).toBe("gzip");
+    expect(c["x-goog-api-client"]).toBeUndefined();
+  });
+
+  it("passes the 1:1 wire-signature audit and resolves OAuth client provenance", async () => {
+    const prevId = process.env.ANTIGRAVITY_CLIENT_ID;
+    const prevSecret = process.env.ANTIGRAVITY_CLIENT_SECRET;
+    delete process.env.ANTIGRAVITY_CLIENT_ID;
+    delete process.env.ANTIGRAVITY_CLIENT_SECRET;
+    try {
+      // Custom env wins over every other source.
+      process.env.ANTIGRAVITY_CLIENT_ID = "custom-id.apps.googleusercontent.com";
+      process.env.ANTIGRAVITY_CLIENT_SECRET = "custom-secret";
+      const envCreds = resolveOAuthClientCredentials();
+      expect(envCreds.source).toBe("env");
+      expect(isUsingAgyClientOAuth(envCreds)).toBe(false);
+      expect(resolveRedirectUri(envCreds)).toContain("/oauth-callback");
+      delete process.env.ANTIGRAVITY_CLIENT_ID;
+      delete process.env.ANTIGRAVITY_CLIENT_SECRET;
+
+      // Without env or cache, resolution falls back to the OMP builtin pair.
+      const fallbackCreds = resolveOAuthClientCredentials();
+      expect(["builtin", "agy", "none"]).toContain(fallbackCreds.source);
+    } finally {
+      if (prevId !== undefined) process.env.ANTIGRAVITY_CLIENT_ID = prevId;
+      else delete process.env.ANTIGRAVITY_CLIENT_ID;
+      if (prevSecret !== undefined) process.env.ANTIGRAVITY_CLIENT_SECRET = prevSecret;
+      else delete process.env.ANTIGRAVITY_CLIENT_SECRET;
+    }
+
+    const report = await auditHubSignature((async () => {
+      const body = "version: 9.9.9\nversion: 9.9.9-12345\n";
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch);
+    const byId = Object.fromEntries(report.checks.map((c) => [c.id, c]));
+    expect(byId["ua-format"]?.status).toBe("ok");
+    // Mock manifest advertises 9.9.9, so parity warns rather than failing.
+    expect(byId["ua-parity"]?.status).toBe("warn");
+    expect(byId["inference-headers"]?.status).toBe("ok");
+    expect(byId["control-headers"]?.status).toBe("ok");
+    expect(byId["envelope"]?.status).toBe("ok");
+    expect(byId["trace-id"]?.status).toBe("ok");
+    expect(report.failed).toBe(0);
+  });
+
+  it("extracts and pair-verifies the agy OAuth client from a local binary", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ag-agy-"));
+    try {
+      // Synthetic binary blob carrying two client IDs and two secrets
+      // (assembled at runtime; credentials never live in this repository).
+      const idA = `${"884354919052".slice(0, 12)}-${"agyfirstparty".repeat(2).slice(0, 24)}.apps.googleusercontent.com`;
+      const idB = `${"107100606059".slice(0, 12)}1-${"sharedlegacycli".slice(0, 24)}.apps.googleusercontent.com`;
+      const secA = `GOCSPX-${"agy-secret-value-1234567890ab"}`;
+      const secB = `GOCSPX-${"shared-secret-value-9876543210"}`;
+      const blob = [
+        `clientA=${idA}`,
+        `clientB=${idB}`,
+        `secretA=${secA}`,
+        `secretB=${secB}`,
+        "padding ".repeat(400_000),
+      ].join("\n");
+      const binaryPath = path.join(tmp, "agy-fake.exe");
+      fs.writeFileSync(binaryPath, blob);
+
+      const candidates = extractAgyOAuthCandidates(binaryPath);
+      // 2 ids x 2 secret runs x expanded prefix lengths; the run containing
+      // the true secret must appear at its exact 28-char position.
+      expect(candidates.length).toBeGreaterThan(4);
+      expect(candidates.some((c) => c.clientId === idA && c.clientSecret === secA)).toBe(true);
+      expect(candidates.some((c) => c.clientId === idB && c.clientSecret === secB)).toBe(true);
+
+      // Pairing probe: secret A belongs to id A, secret B to id B.
+      const probeFetch = (async (_url: unknown, init?: RequestInit) => {
+        const body = String(init?.body ?? "");
+        const paired =
+          (body.includes(idA) && body.includes(secA)) || (body.includes(idB) && body.includes(secB));
+        return new Response(
+          paired ? '{"error":"invalid_grant"}' : '{"error":"invalid_client"}',
+          { status: paired ? 400 : 401 }
+        );
+      }) as unknown as typeof fetch;
+
+      const pair = await pairAgyOAuthClient(candidates, probeFetch);
+      expect(pair).not.toBeNull();
+      expect(pair).toEqual({ clientId: idA, clientSecret: secA });
+
+      // Cache round-trip.
+      const cachePath = path.join(tmp, "agy-oauth.json");
+      expect(readAgyClientCache(cachePath)).toBeNull();
+      expect(writeAgyClientCache(cachePath, pair!, { source: "agy-binary", binaryPath })).toBe(true);
+      const cached = readAgyClientCache(cachePath);
+      expect(cached?.clientId).toBe(idA);
+      expect(cached?.clientSecret).toBe(secA);
+      expect(cached?.source).toBe("agy-binary");
+    } finally {
+      safeRm(tmp);
     }
   });
 });

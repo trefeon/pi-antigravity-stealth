@@ -25,7 +25,7 @@ All client traffic terminates at Google Cloud Code Assist (CCPA) gateways:
 In late 2026, Google initiated automated account restrictions on non-compliant clients. Analysis of network dumps and reverse-engineered clients reveals the primary triggers:
 
 1. **Shared Public OAuth Client ID**:
-   Using the default hardcoded client ID (`1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com`) across thousands of unverified third-party IP addresses without matching browser or app runtime fingerprints.
+   Using the default hardcoded client ID (prefix `1071006060591-…apps.googleusercontent.com`) across thousands of unverified third-party IP addresses without matching browser or app runtime fingerprints.
 2. **Conflicting / Mismatched Headers**:
    Older unofficial clients sent `X-Goog-Api-Client` and `Client-Metadata` headers alongside inference calls. Real Antigravity Hub requests send **only** the canonical `User-Agent`.
 3. **Stale / Hardcoded User-Agent Versions**:
@@ -232,6 +232,23 @@ Oh My Pi (`@oh-my-pi/pi-coding-agent`) already possesses native hooks for these 
 | `PI_AI_ANTIGRAVITY_CL` | `"1005016104"` | `"6001966350991360"` | Internal Google Changelist |
 | `PI_AI_ANTIGRAVITY_OS` | `process.platform` | `"windows"` (or native host) | Reported OS type |
 | `PI_AI_ANTIGRAVITY_ARCH` | `process.arch` | `"amd64"` | Reported architecture |
-| `ANTIGRAVITY_CLIENT_ID` | Default public | *Custom GCP OAuth Client ID* | Isolates account from shared bans |
-| `ANTIGRAVITY_CLIENT_SECRET` | Default public | *Custom GCP OAuth Secret* | Paired secret |
+| `ANTIGRAVITY_CLIENT_ID` | agy CLI pair | *Custom GCP OAuth Client ID* | Isolates account from shared bans |
+| `ANTIGRAVITY_CLIENT_SECRET` | agy CLI pair | *Custom GCP OAuth Secret* | Paired secret |
 | `providers.antigravityEndpoint` | `auto` | `production` (maps to daily host) | Target endpoint strategy |
+
+---
+
+## 7. `agy` CLI v1.5.9 Reverse-Engineering Findings (2026-11-14)
+
+Extracted from `C:\Users\<user>\AppData\Local\agy\bin\agy.exe` (231 MB Go binary, `google3/third_party/jetski` tree):
+
+* **OAuth clients (pairing verified live against `oauth2.googleapis.com` via `invalid_grant` vs `invalid_client`):**
+  - Official `agy` CLI client: client ID prefix `884354919052-…` with its paired `GOCSPX-…` secret, loopback redirect `http://localhost:<port>/auth/callback`. Full literals are resolved at runtime from the local binary (`src/agy-client.ts`) and cached user-locally — never committed (GitHub push protection).
+  - Legacy shared client: client ID prefix `1071006060591-…` with its paired `GOCSPX-…` secret. Shared-client usage across thousands of IPs is Google's primary third-party detection signal — the stealth plugin prefers the `agy` pair whenever the local binary is present.
+* **Header inventory:** `x-cloudaicompanion-trace-id` (per-request UUID), `anthropic-beta` (incl. newer token `thinking-binding-controls-2026-08-01`), `X-Aicode-Request-Id`, `X-Aicode-Trajectory-Id`, `x-goog-sherlog-Link`; `x-goog-api-client` appears only in upload/Vertex paths, never on Cloud Code inference.
+* **Inference path:** REST JSON `/v1internal:streamGenerateContent` (`codeassistclient.(*CodeAssistClient).streamGenerateContentFromCCPA`) — same route OMP/pi-ai uses; gRPC (`google.internal.cloud.code.v1internal.*`) serves the rest of the backend.
+* **Envelope keys:** `project`, `requestId` (`agent/<agentId>/<ts>/<trajectoryId>/<step>`), `request{contents, sessionId, labels{cascade_id, root_cascade_id, last_step_index, used_non_gemini_model, ...}}`, `userAgent: "antigravity"`.
+* **Model roster (current):** `gemini-4-hydrogen-{low,medium,xhigh}`, `gemini-4-argon-{low,medium,high}`, `gemini-4-carbon-{low,medium}`, `gemini-3.8-flash-{medium,high}`, `gemini-3.7-flash-{medium,high}`, `gemini-3.6-flash-high`, `claude-sonnet-5-5-{low,medium,max}`, `claude-opus-5-5-{low,medium,max}`, `gemini-3.1-pro-low-thinking`, `gemini-3-flash-agent`, `gemini-flash-latest`, `openai/gpt-oss-120b-maas`.
+* **Fixed probe identity:** `48c6cd67-05ce-4112-a170-ad8e0c7c136c` ships as the `antigravity-model-availability-probe` session UUID.
+* **Config surface:** `cloud_code_endpoint` env + `CLOUD_CODE_URL` override; settings at `~/.gemini/antigravity-cli/settings.json`; updater `https://antigravity-cli-auto-updater-974169037036.us-central1.run.app`.
+* **Appeal form (ToS suspension):** `https://forms.gle/hGzM9MEUv2azZsrb9` — returned in 403 `TOS_VIOLATION` error metadata (`appeal_url`); the form acknowledges third-party tool access (Claude Code/OpenCode/OpenClaw) and resale as violations, with permanent suspension on repeat.

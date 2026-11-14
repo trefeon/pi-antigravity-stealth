@@ -32,3 +32,29 @@ export const FALLBACK_VERSION = "2.32.1";
 export const FALLBACK_CL = "6001966350991360";
 export const CLI_BASELINE_VERSION = "1.5.9";
 export const FALLBACK_PROJECT_ID = "rising-fact-p41fc";
+
+/**
+ * Google Antigravity appeal form, surfaced whenever a 403 TOS_VIOLATION ban is detected.
+ */
+export const APPEAL_FORM_URL = "https://forms.gle/hGzM9MEUv2azZsrb9";
+
+/**
+ * OAuth client provenance is resolved at runtime (see src/agy-client.ts):
+ * explicit env → local `agy` binary extraction (cached user-locally) → OMP
+ * built-in pair. GitHub push protection rightly rejects Google OAuth client
+ * literals in this public repository, so no credentials live in source.
+ *
+ * Fragments below are provenance markers only — intentionally incomplete so
+ * they cannot be reassembled into working credentials from the repo.
+ */
+
+/** Prefix of the official `agy` CLI client ID (first-party logins). */
+export const AGY_CLI_OAUTH_CLIENT_ID_PREFIX = "884354919052-";
+
+/** Prefix of the legacy shared Cloud Code Assist client baked into older
+ * unofficial clients; its use across thousands of unrelated IPs is Google's
+ * primary third-party detection signal (see docs/LEGIT_ANTIGRAVITY_SIGNATURE.md). */
+export const PUBLIC_SHARED_OAUTH_CLIENT_ID_PREFIX = "1071006060591-";
+
+/** Redirect path used by the official `agy` CLI (`http://localhost:<port>/auth/callback`). */
+export const AGY_CALLBACK_PATH = "/auth/callback";

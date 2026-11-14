@@ -12,6 +12,7 @@ import * as http from "http";
 import * as crypto from "crypto";
 import { execFile } from "child_process";
 import {
+  AGY_CALLBACK_PATH,
   ANTIGRAVITY_ENDPOINT_DAILY,
   ANTIGRAVITY_SCOPES,
   CALLBACK_PATH,
@@ -24,6 +25,7 @@ import {
 } from "./constants.ts";
 import { buildHubUserAgent } from "./manifest.ts";
 import { getBuiltinAntigravityClientCredentials } from "./omp-builtin.ts";
+import { defaultAgyCachePath, readAgyClientCache, resolveAgyOAuthPair } from "./agy-client.ts";
 
 export interface AntigravityCredentials {
   access_token: string;
@@ -98,17 +100,69 @@ export function hasCustomOAuthClient(): boolean {
   return Boolean(process.env.ANTIGRAVITY_CLIENT_ID?.trim() && process.env.ANTIGRAVITY_CLIENT_SECRET?.trim());
 }
 
-export function resolveOAuthClientCredentials(): { clientId: string; clientSecret: string } {
+export interface OAuthClientCredentials {
+  clientId: string;
+  clientSecret: string;
+}
+
+export type OAuthClientSource = "env" | "agy" | "builtin" | "none";
+
+export interface ResolvedOAuthClient extends OAuthClientCredentials {
+  source: OAuthClientSource;
+}
+
+/**
+ * True when the resolved OAuth client is the official `agy` CLI pair extracted
+ * from the local binary — the shape Google sees from first-party CLI logins.
+ */
+export function isUsingAgyClientOAuth(resolved?: ResolvedOAuthClient): boolean {
+  const creds = resolved ?? resolveOAuthClientCredentials();
+  return creds.source === "agy";
+}
+
+/**
+ * The official CLI redirects to `http://localhost:<port>/auth/callback`
+ * (`AGY_CALLBACK_PATH`); every other client keeps the historical
+ * `http://127.0.0.1:<port>/oauth-callback` route.
+ */
+export function resolveRedirectUri(resolved?: ResolvedOAuthClient): string {
+  if (isUsingAgyClientOAuth(resolved)) {
+    return `http://localhost:${CALLBACK_PORT}${AGY_CALLBACK_PATH}`;
+  }
+  return REDIRECT_URI;
+}
+
+export function resolveOAuthClientCredentials(): ResolvedOAuthClient {
   const customId = getEffectiveClientId();
   const customSecret = getEffectiveClientSecret();
   if (customId && customSecret) {
-    return { clientId: customId, clientSecret: customSecret };
+    return { clientId: customId, clientSecret: customSecret, source: "env" };
+  }
+  // The agy CLI's own first-party pair is the stealthiest default: OAuth
+  // telemetry then matches genuine `agy` logins instead of the shared legacy
+  // client that Google's enforcement sweeps fingerprint. Extracted from the
+  // locally installed binary and cached user-locally (never in the repo).
+  const cached = readAgyClientCache(defaultAgyCachePath());
+  if (cached) {
+    return { clientId: cached.clientId, clientSecret: cached.clientSecret, source: "agy" };
   }
   const builtin = getBuiltinAntigravityClientCredentials();
   if (builtin) {
-    return builtin;
+    return { ...builtin, source: "builtin" };
   }
-  return { clientId: customId, clientSecret: customSecret };
+  return { clientId: customId, clientSecret: customSecret, source: "none" };
+}
+
+/**
+ * Extracts + pair-verifies the agy CLI OAuth client from the local binary and
+ * caches it for the sync resolver. Called at plugin startup, before login, and
+ * from /agy doctor; failures are silent (builtin pair remains the fallback).
+ */
+export async function ensureAgyOAuthClientCached(): Promise<boolean> {
+  if (hasCustomOAuthClient()) return false;
+  if (readAgyClientCache(defaultAgyCachePath())) return true;
+  const resolved = await resolveAgyOAuthPair();
+  return resolved !== null;
 }
 
 const ALLOWED_ENV_FILE_KEY = /^(ANTIGRAVITY_[A-Z0-9_]+|PI_(?:AI_)?ANTIGRAVITY_[A-Z0-9_]+)$/;
@@ -168,6 +222,9 @@ export async function loginWithBrowser(
       ? { onProgress: callbacksOrProgress }
       : callbacksOrProgress ?? {};
 
+  try {
+    await ensureAgyOAuthClientCached();
+  } catch {}
   const { clientId, clientSecret } = resolveOAuthClientCredentials();
   if (!clientId || !clientSecret) {
     throw new Error(
@@ -191,9 +248,11 @@ export async function loginWithBrowser(
     .replace(/=/g, "");
   const state = crypto.randomBytes(16).toString("hex");
 
+  const redirectUri = resolveRedirectUri();
+
   const authUrl = new URL(OAUTH_AUTH_URL);
   authUrl.searchParams.set("client_id", clientId);
-  authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+  authUrl.searchParams.set("redirect_uri", redirectUri);
   authUrl.searchParams.set("response_type", "code");
   authUrl.searchParams.set("scope", ANTIGRAVITY_SCOPES.join(" "));
   authUrl.searchParams.set("code_challenge", challenge);
@@ -242,7 +301,7 @@ export async function loginWithBrowser(
         client_secret: clientSecret,
         code,
         grant_type: "authorization_code",
-        redirect_uri: REDIRECT_URI,
+        redirect_uri: redirectUri,
         code_verifier: verifier,
       });
 
@@ -330,7 +389,9 @@ export async function loginWithBrowser(
   const server = http.createServer((req, res) => {
     try {
       const reqUrl = new URL(req.url || "", `http://127.0.0.1:${CALLBACK_PORT}`);
-      if (reqUrl.pathname !== CALLBACK_PATH) {
+      // The agy CLI registers `/auth/callback`; the legacy stealth flow used
+      // `/oauth-callback`. Accept both so either redirect shape completes.
+      if (reqUrl.pathname !== CALLBACK_PATH && reqUrl.pathname !== AGY_CALLBACK_PATH) {
         res.writeHead(404);
         res.end("Not Found");
         return;
@@ -369,7 +430,7 @@ export async function loginWithBrowser(
       ? () =>
           callbacks.onPrompt!({
             message: "Paste the redirected localhost callback URL (or authorization code)",
-            placeholder: `${REDIRECT_URI}?code=...&state=...`,
+            placeholder: `${redirectUri}?code=...&state=...`,
           })
       : null;
     if (!reader) return;

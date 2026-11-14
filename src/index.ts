@@ -11,7 +11,9 @@
 import { FALLBACK_PROJECT_ID } from "./constants.ts";
 import { buildHubUserAgent, getLiveHubVersion, resolvePlatform } from "./manifest.ts";
 import {
+  ensureAgyOAuthClientCached,
   hasCustomOAuthClient,
+  isUsingAgyClientOAuth,
   loadAntigravityEnvFiles,
   loginWithBrowser,
   refreshAccessToken,
@@ -29,6 +31,8 @@ import {
   isRunningUnderTests,
 } from "./omp-patch.ts";
 import { createAntigravityUsageProvider } from "./usage.ts";
+import { auditHubSignature, formatWireAudit } from "./audit.ts";
+import { APPEAL_FORM_URL } from "./constants.ts";
 import {
   auditAndQuarantineAccounts,
   findAgentDbPaths,
@@ -79,6 +83,7 @@ export const AGY_SUBCOMMANDS: readonly AgySubcommandDef[] = [
   { name: "status", description: "Show plugin, Hub manifest, and account pool status" },
   { name: "accounts", description: "List saved Antigravity accounts in agent.db" },
   { name: "check", usage: "[--no-quarantine]", description: "Probe live inference health and auto-remove banned 403 accounts" },
+  { name: "appeal", description: "Open the Google appeal form for ToS-suspended accounts" },
   { name: "usage", usage: "[email|id]", takesArgs: true, description: "Show live 5h/weekly quota % per pool" },
   { name: "tier", usage: "[email|id]", takesArgs: true, description: "Probe account tier and Hydrogen entitlement" },
   { name: "login", usage: "[--paste]", description: "Authenticate a Google account (--paste for headless SSH)" },
@@ -486,10 +491,39 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
           }
           if (report.quarantined > 0) {
             lines.push(
-              `\n⚠️ Banned account(s) automatically removed from agent.db to prevent 403 Terms of Service errors during OMP requests.`
+              `\n⛔ Banned account(s) automatically removed from agent.db to prevent 403 Terms of Service errors during OMP requests.`,
+              `Appeal the suspension here: ${APPEAL_FORM_URL}`,
+              `Run '/agy appeal' to open the form directly.`
             );
           }
           notify(lines.join("\n"), report.quarantined > 0 ? "warning" : "info");
+          return;
+        }
+
+        if (subcmd === "appeal") {
+          notify(
+            [
+              `Google Appeal Form (Antigravity / Gemini CLI / Gemini Code Assist ToS suspension):`,
+              APPEAL_FORM_URL,
+              ``,
+              `Open the form in your browser, sign in with the suspended account, and submit the acknowledgement.`,
+              `The acknowledgement states: using third-party tools (e.g. Claude Code, OpenCode, OpenClaw) with your Antigravity/Gemini CLI login and resale of AI Developer Tools services violate the terms; repeat violations after reinstatement lead to permanent suspension.`,
+            ].join("\n")
+          );
+          if (ctx?.hasUI) {
+            try {
+              const { execFile } = await import("child_process");
+              const opener =
+                process.platform === "win32"
+                  ? { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", APPEAL_FORM_URL] }
+                  : process.platform === "darwin"
+                  ? { command: "open", args: [APPEAL_FORM_URL] }
+                  : { command: "xdg-open", args: [APPEAL_FORM_URL] };
+              const child = execFile(opener.command, opener.args, { windowsHide: true }, () => {});
+              child.unref?.();
+              notify("Opening the appeal form in your browser...");
+            } catch {}
+          }
           return;
         }
 
@@ -725,6 +759,9 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
             typeof process.versions?.bun === "string"
               ? `Bun ${process.versions.bun}`
               : `Node ${process.version}`;
+          try {
+            await ensureAgyOAuthClientCached();
+          } catch {}
           const distDir = findOmpAgentDistDir();
           const piAiDir = findPiAiPackageDir();
           const resolvedCreds = resolveOAuthClientCredentials();
@@ -754,15 +791,18 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
             `OAuth Client Creds: ${
               hasCustomOAuthClient()
                 ? "Custom env (ANTIGRAVITY_CLIENT_ID/SECRET)"
-                : resolvedCreds.clientId && resolvedCreds.clientSecret
-                ? "OMP Built-in rules.json"
-                : "MISSING (set ANTIGRAVITY_CLIENT_ID & ANTIGRAVITY_CLIENT_SECRET for /agy login)"
+                : isUsingAgyClientOAuth()
+                ? "agy CLI client (1:1 first-party pair, binary-extracted)"
+                : resolvedCreds.source === "builtin"
+                ? "OMP built-in rules.json pair"
+                : "MISSING (install the agy CLI or set ANTIGRAVITY_CLIENT_ID & ANTIGRAVITY_CLIENT_SECRET)"
             }`,
             `Database Paths: ${dbPaths.length > 0 ? dbPaths.join(", ") : "none created yet"}`,
             `Accounts: ${activeAcc} active, ${expiredAcc} expired, ${disabledAcc} disabled${
               tosBannedAcc > 0 ? ` (${tosBannedAcc} ToS quarantined)` : ""
             }`,
             `Hub User-Agent: ${ua}`,
+            `Appeal Form: ${APPEAL_FORM_URL}`,
             `Updater Cache: ${
               upd
                 ? `latest=v${upd.latest ?? "?"}, checked=${upd.checkedAt ? new Date(upd.checkedAt).toISOString() : "never"}${
@@ -771,6 +811,12 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
                 : "no cached check yet"
             }`,
           ];
+          try {
+            const audit = await auditHubSignature();
+            lines.push("", ...formatWireAudit(audit));
+          } catch (err) {
+            lines.push(`Wire Audit: unavailable (${err instanceof Error ? err.message : String(err)})`);
+          }
           notify(lines.join("\n"));
           return;
         }
@@ -836,6 +882,32 @@ export default async function antigravityPlugin(pi: ExtensionAPI): Promise<void>
     }
     if (process.env.PI_ANTIGRAVITY_SKIP_UPDATE_CHECK) return;
     if (isRunningUnderTests()) return;
+
+    // Background ban sweep: probe inference health (30-minute TTL), auto-remove
+    // any account Google has suspended with 403 TOS_VIOLATION, and surface the
+    // appeal form. Non-blocking; never runs in tests or when opted out.
+    if (!process.env.PI_ANTIGRAVITY_SKIP_AUTO_AUDIT) {
+      void (async () => {
+        try {
+          const report = await auditAndQuarantineAccounts(true);
+          if (report.quarantined > 0) {
+            const removed = report.results
+              .filter((r) => r.status === "banned")
+              .map((r) => `${r.id}${r.email ? ` (${maskEmail(r.email)})` : ""}`)
+              .join(", ");
+            const msg = `Ban sweep auto-removed ${report.quarantined} suspended account(s): ${removed}. Appeal: ${APPEAL_FORM_URL}`;
+            if (ctx.ui) {
+              ctx.ui.notify(msg, "warning");
+            } else {
+              pi.logger?.warn?.(msg);
+            }
+          }
+        } catch {
+          // Silent: the sweep is best-effort; /agy check runs it on demand.
+        }
+      })();
+    }
+
     void maybeAutoUpdate()
       .then((result) => {
         if (result.status !== "updated" && result.status !== "failed") return;

@@ -1,6 +1,6 @@
 {
   "name": "pi-antigravity-stealth",
-  "version": "1.2.5",
+  "version": "1.2.6",
   "type": "module",
   "main": "index.ts",
   "description": "Stealth Google Antigravity plugin for OMP & Pi: Hub wire spoofing, Argon quota isolation, auto-patching, and saved credential recovery",

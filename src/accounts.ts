@@ -6,8 +6,13 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import * as crypto from "crypto";
 import { createRequire } from "module";
-import { ANTIGRAVITY_ENDPOINT_DAILY, FALLBACK_PROJECT_ID } from "./constants.ts";
+import {
+  ANTIGRAVITY_ENDPOINT_DAILY,
+  APPEAL_FORM_URL,
+  FALLBACK_PROJECT_ID,
+} from "./constants.ts";
 import { buildHubUserAgent } from "./manifest.ts";
 
 interface SqliteStatement {
@@ -361,6 +366,83 @@ export function markAccountDisabled(
   return removeStoredAccount(identifier, false, cause);
 }
 
+/**
+ * `sessionId` as the official client sends it: a signed decimal string
+ * (mirrors pi-ai's `randomSignedDecimalSessionId`).
+ */
+function randomSignedDecimalSessionId(): string {
+  try {
+    const hex = crypto.randomUUID().replace(/-/g, "").slice(0, 15);
+    const raw = BigInt(`0x${hex}`);
+    const sign = (raw & 1n) === 1n ? "" : "-";
+    return `${sign}${raw}`;
+  } catch {
+    return `${Date.now()}`;
+  }
+}
+
+/**
+ * Full 1:1 Antigravity client request identity for inference calls, extracted
+ * from `agy` v1.5.9 and cross-checked against pi-ai's live-verified envelope:
+ * `requestId` is `agent/<agentId>/<ts>/<trajectoryId>/<step>`; `labels` carry
+ * cascade ids; the top level carries `project`, `model`, `request`,
+ * `userAgent: "antigravity"`.
+ */
+export function buildAntigravityProbeEnvelope(project: string, model: string, prompt = "ping") {
+  const agentId = crypto.randomUUID();
+  const trajectoryId = crypto.randomUUID();
+  const step = 1;
+  return {
+    project,
+    requestId: `agent/${agentId}/${Date.now()}/${trajectoryId}/${step}`,
+    request: {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 1 },
+      sessionId: randomSignedDecimalSessionId(),
+      labels: {
+        cascade_id: agentId,
+        root_cascade_id: agentId,
+        last_step_index: String(step - 1),
+        used_non_gemini_model: "false",
+      },
+    },
+    model,
+    userAgent: "antigravity",
+  };
+}
+
+/**
+ * Headers exactly as the official client sends them on inference
+ * (`Accept: text/event-stream` + `Accept-Encoding: gzip`, Go-client style).
+ * NEVER sends `X-Goog-Api-Client` or `Client-Metadata` — the Hub backend
+ * treats their presence on inference as a third-party-wrapper indicator.
+ */
+export async function buildInferenceRequestHeaders(token: string): Promise<Record<string, string>> {
+  const userAgent = await buildHubUserAgent();
+  return {
+    Accept: "text/event-stream",
+    "Accept-Encoding": "gzip",
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "User-Agent": userAgent,
+    "x-cloudaicompanion-trace-id": crypto.randomUUID(),
+  };
+}
+
+/**
+ * Control-plane headers (loadCodeAssist / fetchAvailableModels / quota).
+ */
+export async function buildControlRequestHeaders(token: string): Promise<Record<string, string>> {
+  const userAgent = await buildHubUserAgent();
+  return {
+    "Accept-Encoding": "gzip",
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    "User-Agent": userAgent,
+    "x-cloudaicompanion-trace-id": crypto.randomUUID(),
+  };
+}
+
 export function purgeBannedAccounts(): {
   purged: number;
   accounts: string[];
@@ -420,25 +502,15 @@ export async function probeAccountInference(
   if (!token) {
     return { status: "error", message: "No access token available" };
   }
-  const userAgent = await buildHubUserAgent();
   const project = account.projectId && account.projectId.length > 0 ? account.projectId : FALLBACK_PROJECT_ID;
+  const headers = await buildInferenceRequestHeaders(token);
+  const envelope = buildAntigravityProbeEnvelope(project, "gemini-3.8-flash-high");
 
   try {
     const res = await customFetch(`${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal:streamGenerateContent?alt=sse`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-        "User-Agent": userAgent,
-      },
-      body: JSON.stringify({
-        project,
-        model: "gemini-3.8-flash-high",
-        request: {
-          contents: [{ role: "user", parts: [{ text: "ping" }] }],
-          generationConfig: { maxOutputTokens: 1 },
-        },
-      }),
+      headers,
+      body: JSON.stringify(envelope),
     });
 
     if (res.ok) {
@@ -456,7 +528,7 @@ export async function probeAccountInference(
       return {
         status: "banned",
         statusCode: res.status,
-        message: "This service has been disabled in this account for violation of Terms of Service.",
+        message: `This service has been disabled in this account for violation of Terms of Service. Appeal: ${APPEAL_FORM_URL}`,
       };
     }
 
@@ -569,16 +641,12 @@ export async function auditAndQuarantineAccounts(
 }
 
 export async function probeAccountTier(accessToken: string): Promise<AccountTierInfo> {
-  const userAgent = await buildHubUserAgent();
+  const headers = await buildControlRequestHeaders(accessToken);
 
   try {
     const res = await fetch(`${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal:loadCodeAssist`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": userAgent,
-      },
+      headers,
       body: JSON.stringify({ metadata: { ideType: "ANTIGRAVITY" } }),
     });
 
@@ -655,16 +723,12 @@ export async function probeHydrogenEntitlement(
   accessToken: string,
   projectId?: string
 ): Promise<HydrogenEntitlementInfo> {
-  const userAgent = await buildHubUserAgent();
   const project = projectId && projectId.length > 0 ? projectId : FALLBACK_PROJECT_ID;
+  const headers = await buildControlRequestHeaders(accessToken);
   try {
     const res = await fetch(`${ANTIGRAVITY_ENDPOINT_DAILY}/v1internal:fetchAvailableModels`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": userAgent,
-      },
+      headers,
       body: JSON.stringify({ project }),
     });
     if (!res.ok) {

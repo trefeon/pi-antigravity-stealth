@@ -11,7 +11,8 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
 
 - `/agy status` — Active plugin version, install kind, Hub User-Agent/CL, OAuth mode, and account count.
 - `/agy accounts` — List saved accounts in `agent.db` with IDs, masked emails, project IDs, and expiration/disabled state.
-- `/agy check [--no-quarantine]` — Probe live inference health across saved accounts and automatically quarantine accounts banned with 403 Terms of Service violations.
+- `/agy check [--no-quarantine]` — Probe live inference health and **permanently remove** accounts suspended with 403 Terms of Service violations.
+- `/agy appeal` — Open/print the Google appeal form for ToS-suspended accounts (`https://forms.gle/hGzM9MEUv2azZsrb9`).
 - `/agy usage [email|id]` — Query live quota percentages and reset windows grouped by **Gemini**, **Gemini 4 Argon**, and **Claude & GPT (shared)**.
 - `/agy tier [email|id]` — Probe subscription tier (`Free Tier`, `Google AI Plus`, `Google AI Pro`, `Google AI Ultra`).
 - `/agy doctor` — Print sanitized host, runtime, `omp-builtin`, `agent.db`, Hub manifest, and updater diagnostics.
@@ -35,6 +36,10 @@ Use this skill when managing or troubleshooting the `google-antigravity` provide
    - Developer checkouts containing `.git` are never overwritten automatically.
 5. **403 Terms of Service Violation ("This service has been disabled in this account"):**
    - Occurs when an account is banned/restricted by Google enforcement for Cloud Code Assist. Metadata endpoints (`loadCodeAssist`) may still return 200 while inference (`streamGenerateContent`) fails with 403.
-   - Run `/agy check` to test inference health across all saved accounts and auto-quarantine banned accounts with `disabled_cause = '403: Terms of Service violation'`.
-   - Quarantining the banned account prevents OMP from selecting it and crashing during requests or model fallback (e.g. `gemini-4-hydrogen` -> `gemini-3.8-flash`).
+   - Run `/agy check` to test inference health across all saved accounts; suspended accounts are permanently removed from `agent.db` automatically (also swept on every plugin startup and every interactive session start; opt out with `PI_ANTIGRAVITY_SKIP_AUTO_AUDIT=1`).
+   - The output and session notice include the appeal link (`https://forms.gle/hGzM9MEUv2azZsrb9`); `/agy appeal` opens it directly.
    - Pro/Ultra-only models like `gemini-4-hydrogen` require at least one active Google AI Pro/Ultra account; if all remaining active accounts are Free/Plus, requests fall back to available models.
+6. **1:1 Client Parity (ban prevention):**
+   - Logins default to the official `agy` CLI OAuth client (ID prefix `884354919052-…`, secret extracted from the local binary at runtime and cached user-locally — pairing verified) with the CLI's `http://localhost:<port>/auth/callback` redirect; env overrides (`ANTIGRAVITY_CLIENT_ID/SECRET`) still win.
+   - All plugin-issued probes use the CLI-shaped envelope (`requestId=agent/<agentId>/<ts>/<trajectoryId>/<step>`, signed-decimal `sessionId`, `labels.cascade_id`, `userAgent: "antigravity"`) and headers (`Accept: text/event-stream`, `Accept-Encoding: gzip`, per-request `x-cloudaicompanion-trace-id`; never `X-Goog-Api-Client`/`Client-Metadata` on inference).
+   - `/agy doctor` runs the wire-signature audit (UA format, live-manifest parity, header allowlist, envelope, OAuth provenance) and prints pass/warn/fail per check.
