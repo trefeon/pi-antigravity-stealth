@@ -53,7 +53,8 @@
     "patch": "bun run scripts/patch-omp.ts",
     "link": "omp plugin link .",
     "check:drift": "bun run scripts/check-upstream-drift.ts",
-    "sync:upstream": "bun run scripts/check-upstream-drift.ts --apply"
+    "sync:upstream": "bun run scripts/check-upstream-drift.ts --apply",
+    "publish:webauth": "node scripts/publish-npm-webauth.mjs"
   },
   "devDependencies": {
     "@oh-my-pi/pi-ai": "^18.20.0",
