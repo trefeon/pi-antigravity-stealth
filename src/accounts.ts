@@ -40,12 +40,23 @@ function openSqlite(dbPath: string, readonly: boolean): SqliteDb | null {
 
   try {
     const mod = requireFromHere("node:sqlite") as {
-      DatabaseSync: new (
-        p: string,
-        opts?: { readOnly?: boolean }
-      ) => { prepare(sql: string): SqliteStatement; close(): void };
+      DatabaseSync: new (p: string, opts?: { readOnly?: boolean }) => {
+        prepare(sql: string): SqliteStatement;
+        close(): void;
+      };
     };
-    const db = new mod.DatabaseSync(dbPath, readonly ? { readOnly: true } : undefined);
+    let db: { prepare(sql: string): SqliteStatement; close(): void };
+    try {
+      // Node 22 rejects an explicitly-undefined options argument, and older
+      // 22.x builds lack the readOnly option entirely — degrade gracefully.
+      db = readonly ? new mod.DatabaseSync(dbPath, { readOnly: true }) : new mod.DatabaseSync(dbPath);
+    } catch (err) {
+      if (readonly && err instanceof TypeError) {
+        db = new mod.DatabaseSync(dbPath);
+      } else {
+        throw err;
+      }
+    }
     return {
       query: (sql: string) => db.prepare(sql),
       close: () => db.close(),
